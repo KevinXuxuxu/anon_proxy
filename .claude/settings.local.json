@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(uv add *)",
-      "Bash(uv run *)"
+      "Bash(uv run *)",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(env -u ANTHROPIC_API_KEY uv run python test_mask.py)"
     ]
   }
 }

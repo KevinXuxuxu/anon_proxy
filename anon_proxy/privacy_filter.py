@@ -63,8 +63,7 @@ class PrivacyFilter:
 
 
 def _to_entity(raw: dict, original: str) -> PIIEntity:
-    start = int(raw["start"])
-    end = int(raw["end"])
+    start, end = _tighten(int(raw["start"]), int(raw["end"]), original)
     label = raw.get("entity_group") or raw["entity"]
     return PIIEntity(
         label=label,
@@ -85,21 +84,27 @@ def _merge_adjacent_entities(entities: list[PIIEntity], original: str) -> list[P
             prev = merged[-1]
             gap = original[prev.end : e.start]
             if prev.label == e.label and (gap == "" or gap.isspace()):
+                start, end = _tighten(prev.start, e.end, original)
                 merged[-1] = PIIEntity(
                     label=prev.label,
-                    text=original[prev.start : e.end].strip(),
-                    start=prev.start,
-                    end=e.end,
+                    text=original[start:end],
+                    start=start,
+                    end=end,
                     score=min(prev.score, e.score),
                 )
                 continue
-        merged.append(
-            PIIEntity(
-                label=e.label,
-                text=original[e.start : e.end].strip() or e.text,
-                start=e.start,
-                end=e.end,
-                score=e.score,
-            )
-        )
+        merged.append(e)
     return merged
+
+
+def _tighten(start: int, end: int, original: str) -> tuple[int, int]:
+    """Shrink [start, end) to exclude leading/trailing whitespace.
+
+    Keeps the invariant `entity.text == original[entity.start:entity.end]`,
+    which the mask/unmask layer relies on for offset-correct replacement.
+    """
+    while start < end and original[start].isspace():
+        start += 1
+    while end > start and original[end - 1].isspace():
+        end -= 1
+    return start, end
