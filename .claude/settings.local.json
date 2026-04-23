@@ -5,7 +5,17 @@
       "Bash(uv run *)",
       "Skill(claude-api)",
       "Skill(claude-api:*)",
-      "Bash(env -u ANTHROPIC_API_KEY uv run python test_mask.py)"
+      "Bash(env -u ANTHROPIC_API_KEY uv run python test_mask.py)",
+      "Bash(ANON_PROXY_PORT=18081 uv run python main.py)",
+      "Bash(curl -s -o /dev/null http://127.0.0.1:18081/ --connect-timeout 1)",
+      "Bash(curl -s -w '\\\\nHTTP %{http_code}\\\\n' -H 'x-api-key: sk-ant-fake' -H 'anthropic-version: 2023-06-01' http://127.0.0.1:18081/v1/models)",
+      "Bash(curl -s -w '\\\\nHTTP %{http_code}\\\\n' -H 'x-api-key: sk-ant-fake' -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' --data '{\"model\":\"claude-opus-4-7\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi I am Alice Smith alice@example.com\"}]}' http://127.0.0.1:18081/v1/messages)",
+      "Bash(kill %1)",
+      "Bash(pkill -f 'ANON_PROXY_PORT=18081')",
+      "Bash(fuser -k 18081/tcp)",
+      "Bash(lsof -ti:18081)",
+      "Bash(xargs -r kill -9)",
+      "Bash(lsof -ti:18082)"
     ]
   }
 }

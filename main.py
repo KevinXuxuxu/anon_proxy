@@ -1,6 +1,4 @@
-def main():
-    print("Hello from anon-proxy!")
-
+from anon_proxy.server import main
 
 if __name__ == "__main__":
     main()

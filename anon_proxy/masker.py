@@ -1,7 +1,12 @@
 import re
+from typing import Protocol
 
 from anon_proxy.mapping import PIIStore
-from anon_proxy.privacy_filter import PrivacyFilter
+from anon_proxy.privacy_filter import PIIEntity, PrivacyFilter
+
+
+class Detector(Protocol):
+    def detect(self, text: str) -> list[PIIEntity]: ...
 
 
 class Masker:
@@ -9,22 +14,31 @@ class Masker:
 
     One Masker instance per conversation: the store accumulates entities across
     turns so the same PII always gets the same placeholder.
+
+    `extra_detectors` is a list of objects with a `detect(text) -> list[PIIEntity]`
+    method whose spans are merged into the primary filter's output. Overlapping
+    spans from different detectors are resolved by preferring the longer span.
     """
 
     def __init__(
         self,
         filter: PrivacyFilter | None = None,
         store: PIIStore | None = None,
+        extra_detectors: list[Detector] | None = None,
     ) -> None:
         self._filter = filter or PrivacyFilter()
         self._store = store or PIIStore()
+        self._extra: list[Detector] = list(extra_detectors or [])
 
     @property
     def store(self) -> PIIStore:
         return self._store
 
     def mask(self, text: str) -> str:
-        entities = self._filter.detect(text)
+        entities: list[PIIEntity] = list(self._filter.detect(text))
+        for detector in self._extra:
+            entities.extend(detector.detect(text))
+        entities = _resolve_overlaps(entities)
         # Replace right-to-left so earlier spans' offsets stay valid.
         for e in sorted(entities, key=lambda x: x.start, reverse=True):
             token = self._store.get_or_create(e.label, e.text).token
@@ -40,3 +54,30 @@ class Masker:
             "|".join(re.escape(t) for t in sorted(tokens, key=len, reverse=True))
         )
         return pattern.sub(lambda m: self._store.original(m.group(0)) or m.group(0), text)
+
+
+def _resolve_overlaps(entities: list[PIIEntity]) -> list[PIIEntity]:
+    """Keep a non-overlapping subset of spans.
+
+    Greedy: sort by (start, -length, -score) so earlier and longer spans land first.
+    Walk left-to-right; when a span overlaps the last kept, replace only if the
+    new one is strictly longer (ties: higher score wins). Touching spans at
+    `prev.end == next.start` do not overlap.
+    """
+    if not entities:
+        return entities
+    ordered = sorted(
+        entities,
+        key=lambda e: (e.start, -(e.end - e.start), -e.score, e.label),
+    )
+    kept: list[PIIEntity] = []
+    for e in ordered:
+        if kept and e.start < kept[-1].end:
+            prev = kept[-1]
+            prev_len = prev.end - prev.start
+            cur_len = e.end - e.start
+            if cur_len > prev_len or (cur_len == prev_len and e.score > prev.score):
+                kept[-1] = e
+            continue
+        kept.append(e)
+    return kept

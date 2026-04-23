@@ -6,10 +6,19 @@ Requires ANTHROPIC_API_KEY in the environment. Each turn:
   3. Claude's streamed reply is printed live (masked, dim), then the
      rendered version with placeholders substituted back to originals.
 
+Input is multi-line: plain Enter inserts a newline, Alt+Enter submits.
+Ctrl-D exits. See _make_prompt_session() for how to remap VS Code's
+Shift+Enter onto Alt+Enter so it also submits.
+
+With --no-mask, the local masker is skipped entirely — useful for pointing
+this script at anon-proxy (ANTHROPIC_BASE_URL=http://127.0.0.1:8080) to
+exercise the server-side masking instead.
+
 Usage:
   uv run python test_mask.py
   uv run python test_mask.py --show-store
   uv run python test_mask.py --model claude-sonnet-4-6
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8080 uv run python test_mask.py --no-mask
 """
 
 from __future__ import annotations
@@ -19,8 +28,10 @@ import os
 import sys
 
 import anthropic
+from prompt_toolkit import ANSI, PromptSession
+from prompt_toolkit.key_binding import KeyBindings
 
-from anon_proxy import Masker
+from anon_proxy import Masker, RegexDetector, load_patterns
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant. The user's messages may contain placeholder "
@@ -51,6 +62,25 @@ def dump_store(masker: Masker) -> None:
         print(f"    {token}  ->  {original!r}")
 
 
+def _make_prompt_session() -> PromptSession:
+    """Multi-line input: plain Enter inserts a newline; Alt+Enter submits.
+
+    Most terminals don't send a distinct code for Shift+Enter — it emits the
+    same byte as plain Enter, so we can't bind it directly. To get Shift+Enter
+    to submit in VS Code's integrated terminal, add this to keybindings.json:
+
+        {
+          "key": "shift+enter",
+          "command": "workbench.action.terminal.sendSequence",
+          "args": { "text": "\\u001b\\r" },
+          "when": "terminalFocus"
+        }
+
+    That remaps Shift+Enter to Alt+Enter, which this prompt already accepts.
+    """
+    return PromptSession(multiline=True, key_bindings=KeyBindings())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -67,7 +97,18 @@ def main() -> int:
     parser.add_argument(
         "--show-store",
         action="store_true",
-        help="Dump the PII mapping after each turn.",
+        help="Dump the PII mapping after each turn (ignored with --no-mask).",
+    )
+    parser.add_argument(
+        "--no-mask",
+        action="store_true",
+        help="Skip local masking/unmasking; send raw text and display raw replies. "
+             "Pair with ANTHROPIC_BASE_URL to test the proxy's own masking.",
+    )
+    parser.add_argument(
+        "--patterns",
+        default=None,
+        help="Path to a JSON file of additional regex patterns (label -> regex).",
     )
     args = parser.parse_args()
 
@@ -80,30 +121,55 @@ def main() -> int:
         )
         return 2
 
-    print("Loading openai/privacy-filter ...", file=sys.stderr)
-    masker = Masker()
+    masker: Masker | None
+    if args.no_mask:
+        masker = None
+    else:
+        print("Loading openai/privacy-filter ...", file=sys.stderr)
+        extra_detectors = []
+        if args.patterns:
+            try:
+                patterns = load_patterns(args.patterns)
+            except (OSError, ValueError) as e:
+                print(f"{RED}error:{RESET} {e}", file=sys.stderr)
+                return 2
+            extra_detectors.append(RegexDetector(patterns))
+        masker = Masker(extra_detectors=extra_detectors)
     client = anthropic.Anthropic()
+    base_url = os.environ.get("ANTHROPIC_BASE_URL")
+    status_bits = [f"model={args.model}"]
+    status_bits.append("masking=off" if args.no_mask else "masking=local")
+    if base_url:
+        status_bits.append(f"base_url={base_url}")
     print(
-        f"Ready. Model: {args.model}. Blank line or Ctrl-D to exit.\n",
+        f"Ready. {' | '.join(status_bits)}.\n"
+        f"  Enter = newline.  Alt+Enter = submit.  Ctrl-D or empty submit = exit.\n",
         file=sys.stderr,
     )
+    session = _make_prompt_session()
+
+    def do_mask(text: str) -> str:
+        return masker.mask(text) if masker is not None else text
+
+    def do_unmask(text: str) -> str:
+        return masker.unmask(text) if masker is not None else text
 
     history: list[dict] = []
     turn = 1
     while True:
         try:
-            user_text = input(f"{CYAN}you[{turn}]>{RESET} ")
+            user_text = session.prompt(ANSI(f"{CYAN}you[{turn}]>{RESET} "))
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
         if not user_text.strip():
             return 0
 
-        masked_user = masker.mask(user_text)
-        if masked_user != user_text:
-            print(f"  {DIM}sending -> {masked_user}{RESET}")
+        sent_text = do_mask(user_text)
+        if sent_text != user_text:
+            print(f"  {DIM}sending -> {sent_text}{RESET}")
 
-        history.append({"role": "user", "content": masked_user})
+        history.append({"role": "user", "content": sent_text})
 
         try:
             with client.messages.stream(
@@ -127,12 +193,12 @@ def main() -> int:
             print(f"  {RED}API error:{RESET} {e}\n")
             continue
 
-        assistant_masked = "".join(b.text for b in final.content if b.type == "text")
+        assistant_text = "".join(b.text for b in final.content if b.type == "text")
         history.append({"role": "assistant", "content": final.content})
 
-        unmasked = masker.unmask(assistant_masked)
-        if unmasked != assistant_masked:
-            print(f"  {DIM}rendered ->{RESET} {unmasked}")
+        rendered = do_unmask(assistant_text)
+        if rendered != assistant_text:
+            print(f"  {DIM}rendered ->{RESET} {rendered}")
 
         usage = final.usage
         cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
@@ -142,7 +208,7 @@ def main() -> int:
             f" cache_read={cache_read} cache_write={cache_write}{RESET}"
         )
 
-        if args.show_store:
+        if args.show_store and masker is not None:
             dump_store(masker)
 
         print()

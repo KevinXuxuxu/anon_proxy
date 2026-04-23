@@ -10,3 +10,4 @@ wheels/
 .venv
 
 fzxu_git.sh
+*.json
