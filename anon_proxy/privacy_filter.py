@@ -48,6 +48,13 @@ class PrivacyFilter:
     entry). Pass `merge_gap_allowed` to override per-label entries; labels
     you don't mention keep their default, and labels you set to `""` can only
     merge across an empty gap.
+
+    Long texts are split into overlapping-free chunks of at most `chunk_size`
+    characters (default 1500, ~375 English tokens — safely within BERT's 512
+    token limit). Splits happen at the last whitespace before the boundary so
+    words are never bisected. Entity spans from adjacent chunks are combined
+    before the adjacency-merge pass, so entities that straddle a chunk boundary
+    are still collapsed into a single placeholder.
     """
 
     MODEL_ID = "openai/privacy-filter"
@@ -58,6 +65,7 @@ class PrivacyFilter:
         aggregation_strategy: str = "simple",
         merge_adjacent: bool = True,
         merge_gap_allowed: dict[str, str] | None = None,
+        chunk_size: int = 1500,
         device: int | str | None = None,
     ) -> None:
         self._pipe = pipeline(
@@ -71,9 +79,21 @@ class PrivacyFilter:
         self._gap_allowed: dict[str, frozenset[str]] = {
             label: frozenset(chars) for label, chars in merged_policy.items()
         }
+        self._chunk_size = chunk_size
 
     def detect(self, text: str) -> list[PIIEntity]:
-        entities = [_to_entity(r, text) for r in self._pipe(text)]
+        chunks = _split_chunks(text, self._chunk_size)
+        entities: list[PIIEntity] = []
+        for offset, chunk in chunks:
+            for r in self._pipe(chunk):
+                e = _to_entity(r, chunk)
+                entities.append(PIIEntity(
+                    label=e.label,
+                    text=e.text,
+                    start=e.start + offset,
+                    end=e.end + offset,
+                    score=e.score,
+                ))
         if self._merge_adjacent:
             entities = _merge_adjacent_entities(entities, text, self._gap_allowed)
         return entities
@@ -84,7 +104,13 @@ class PrivacyFilter:
 
     def detect_batch(self, texts: Iterable[str]) -> list[list[PIIEntity]]:
         texts = list(texts)
-        results = self._pipe(texts) if texts else []
+        if not texts:
+            return []
+        # If any text exceeds the chunk limit, fall back to per-text detect()
+        # so chunking is applied correctly for each one.
+        if any(len(t) > self._chunk_size for t in texts):
+            return [self.detect(t) for t in texts]
+        results = self._pipe(texts)
         out: list[list[PIIEntity]] = []
         for t, res in zip(texts, results):
             entities = [_to_entity(r, t) for r in res]
@@ -92,6 +118,31 @@ class PrivacyFilter:
                 entities = _merge_adjacent_entities(entities, t, self._gap_allowed)
             out.append(entities)
         return out
+
+
+def _split_chunks(text: str, max_chars: int) -> list[tuple[int, str]]:
+    """Return (start_offset, chunk_text) pairs covering all of `text`.
+
+    Each chunk is at most `max_chars` characters. Splits at the last
+    whitespace before the limit so words are not bisected; falls back to a
+    hard cut if no whitespace is found in the window.
+    """
+    if len(text) <= max_chars:
+        return [(0, text)]
+    chunks: list[tuple[int, str]] = []
+    start = 0
+    while start < len(text):
+        if start + max_chars >= len(text):
+            chunks.append((start, text[start:]))
+            break
+        split = text.rfind(" ", start, start + max_chars)
+        if split <= start:
+            split = start + max_chars  # hard cut — no whitespace in window
+        else:
+            split += 1  # include the space in this chunk
+        chunks.append((start, text[start:split]))
+        start = split
+    return chunks
 
 
 def _to_entity(raw: dict, original: str) -> PIIEntity:

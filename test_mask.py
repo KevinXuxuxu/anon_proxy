@@ -116,6 +116,13 @@ def main() -> int:
         help="Path to a JSON file of per-label merge-gap chars (label -> chars). "
              "Overrides entries in DEFAULT_MERGE_GAP_ALLOWED.",
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=1500,
+        metavar="N",
+        help="Max characters per chunk fed to the model (default: 1500).",
+    )
     args = parser.parse_args()
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -141,13 +148,15 @@ def main() -> int:
                 return 2
             extra_detectors.append(RegexDetector(patterns))
         pf: PrivacyFilter | None = None
-        if args.merge_gap_file:
-            try:
-                merge_gap = load_merge_gap(args.merge_gap_file)
-            except (OSError, ValueError) as e:
-                print(f"{RED}error:{RESET} {e}", file=sys.stderr)
-                return 2
-            pf = PrivacyFilter(merge_gap_allowed=merge_gap)
+        if args.merge_gap_file or args.chunk_size != 1500:
+            merge_gap = None
+            if args.merge_gap_file:
+                try:
+                    merge_gap = load_merge_gap(args.merge_gap_file)
+                except (OSError, ValueError) as e:
+                    print(f"{RED}error:{RESET} {e}", file=sys.stderr)
+                    return 2
+            pf = PrivacyFilter(merge_gap_allowed=merge_gap, chunk_size=args.chunk_size)
         masker = Masker(filter=pf, extra_detectors=extra_detectors)
     client = anthropic.Anthropic()
     base_url = os.environ.get("ANTHROPIC_BASE_URL")

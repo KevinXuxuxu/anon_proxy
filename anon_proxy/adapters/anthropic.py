@@ -1,17 +1,17 @@
 """Anthropic Messages API request/response transforms.
 
-Masked on outbound requests: `system` text, `messages[*].content` text blocks,
+Masked on outbound requests: `messages[*].content` text blocks,
 `tool_use.input` string leaves (assistant history), and `tool_result.content`
 (string or nested text blocks).
+
+NOT masked: `system` (tool definitions and instructions — static, not user data),
+`tools` (tool schemas), and `thinking` blocks (extended-thinking signatures are
+computed over original text by upstream).
 
 Unmasked on inbound responses: `text` blocks and `tool_use.input` string leaves
 (non-streaming); `text_delta.text` and `input_json_delta.partial_json`
 (streaming). Input-JSON deltas use JSON-escaped substitution so originals with
 quotes/backslashes don't corrupt the stream.
-
-Top-level `tools` (tool schemas) and `thinking` blocks are intentionally left
-alone — schemas are not data-bearing, and extended-thinking signatures are
-computed over the original text by upstream.
 """
 
 from __future__ import annotations
@@ -27,13 +27,11 @@ TextHook = Callable[[str], None]
 def mask_request(body: dict, masker: Masker) -> dict:
     """Return a copy of an Anthropic Messages request body with PII masked.
 
-    Touches `system` (string or list of text blocks) and `messages[*].content`
-    (string or list of blocks; only blocks with `type == "text"` are masked).
+    Only touches `messages[*].content` — user/assistant text, tool_use.input,
+    and tool_result.content. The system prompt is left intact because it
+    contains static tool definitions and instructions, not user data.
     """
     result = dict(body)
-    system = body.get("system")
-    if system is not None:
-        result["system"] = _mask_system(system, masker)
     messages = body.get("messages")
     if isinstance(messages, list):
         result["messages"] = [_mask_message(m, masker) for m in messages]
@@ -47,14 +45,6 @@ def unmask_response(body: dict, masker: Masker) -> dict:
     if isinstance(content, list):
         result["content"] = [_unmask_block(b, masker) for b in content]
     return result
-
-
-def _mask_system(system, masker: Masker):
-    if isinstance(system, str):
-        return masker.mask(system)
-    if isinstance(system, list):
-        return [_mask_block(b, masker) for b in system]
-    return system
 
 
 def _mask_message(message, masker: Masker):

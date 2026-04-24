@@ -36,37 +36,91 @@ _GREEN = "\033[92m"
 _RESET = "\033[0m"
 
 
-def _pretty(data) -> str:
-    return json.dumps(data, indent=2, ensure_ascii=False)
+def _trunc(s: str, n: int = 100) -> str:
+    s = s.replace("\n", "↵")
+    return repr(s if len(s) <= n else s[:n] + "…")
+
+
+def _diff_messages(before: list, after: list) -> list[str]:
+    lines = []
+    for mb, ma in zip(before, after):
+        role = mb.get("role", "?")
+        cb, ca = mb.get("content"), ma.get("content")
+        if isinstance(cb, str) and cb != ca:
+            lines.append(f"  {role}: {_trunc(cb)} → {_trunc(ca)}")
+        elif isinstance(cb, list):
+            for j, (bb, ba) in enumerate(zip(cb, ca)):
+                if bb == ba:
+                    continue
+                btype = bb.get("type", "?")
+                if btype == "text":
+                    lines.append(
+                        f"  {role}[{j}] text: {_trunc(bb.get('text',''))} → {_trunc(ba.get('text',''))}"
+                    )
+                elif btype == "tool_use":
+                    bi = json.dumps(bb.get("input", {}), ensure_ascii=False)
+                    ai = json.dumps(ba.get("input", {}), ensure_ascii=False)
+                    lines.append(
+                        f"  {role}[{j}] tool_use({bb.get('name','?')}): {_trunc(bi)} → {_trunc(ai)}"
+                    )
+                elif btype == "tool_result":
+                    bc, ac = bb.get("content", ""), ba.get("content", "")
+                    if isinstance(bc, str):
+                        lines.append(f"  {role}[{j}] tool_result: {_trunc(bc)} → {_trunc(ac)}")
+                    else:
+                        lines.append(f"  {role}[{j}] tool_result: (content changed)")
+    return lines
+
+
+def _diff_content(before: list, after: list) -> list[str]:
+    lines = []
+    for i, (bb, ba) in enumerate(zip(before, after)):
+        if bb == ba:
+            continue
+        btype = bb.get("type", "?")
+        if btype == "text":
+            lines.append(f"  text[{i}]: {_trunc(bb.get('text',''))} → {_trunc(ba.get('text',''))}")
+        elif btype == "tool_use":
+            bi = json.dumps(bb.get("input", {}), ensure_ascii=False)
+            ai = json.dumps(ba.get("input", {}), ensure_ascii=False)
+            lines.append(f"  tool_use[{i}]({bb.get('name','?')}): {_trunc(bi)} → {_trunc(ai)}")
+    return lines
 
 
 def _log_request(incoming: dict, masked: dict, new_store_entries: list[tuple[str, str]]) -> None:
-    print(f"\n{_DIM}==== POST /v1/messages ===={_RESET}", file=sys.stderr)
-    print(f"{_CYAN}[client -> proxy]{_RESET}", file=sys.stderr)
-    print(_pretty(incoming), file=sys.stderr)
-    print(f"{_YELLOW}[proxy -> upstream] (masked){_RESET}", file=sys.stderr)
-    print(_pretty(masked), file=sys.stderr)
+    model = incoming.get("model", "?")
+    n_msg = len(incoming.get("messages", []))
+    print(f"\n{_DIM}==== POST /v1/messages | model={model} | {n_msg} msg ===={_RESET}", file=sys.stderr)
     if new_store_entries:
         print(f"{_DIM}[store +{len(new_store_entries)}]{_RESET}", file=sys.stderr)
         for token, original in new_store_entries:
-            print(f"  {token}  ->  {original!r}", file=sys.stderr)
+            print(f"  {token}  ←  {original!r}", file=sys.stderr)
+    diffs = _diff_messages(incoming.get("messages", []), masked.get("messages", []))
+    if diffs:
+        print(f"{_YELLOW}[masked]{_RESET}", file=sys.stderr)
+        for line in diffs:
+            print(line, file=sys.stderr)
+    elif not new_store_entries:
+        print(f"{_DIM}(no PII detected){_RESET}", file=sys.stderr)
     sys.stderr.flush()
 
 
 def _log_response(upstream: dict, unmasked: dict) -> None:
-    print(f"{_DIM}[upstream -> proxy]{_RESET}", file=sys.stderr)
-    print(_pretty(upstream), file=sys.stderr)
-    print(f"{_GREEN}[proxy -> client] (unmasked){_RESET}", file=sys.stderr)
-    print(_pretty(unmasked), file=sys.stderr)
-    sys.stderr.flush()
+    diffs = _diff_content(upstream.get("content", []), unmasked.get("content", []))
+    if diffs:
+        print(f"{_GREEN}[unmasked response]{_RESET}", file=sys.stderr)
+        for line in diffs:
+            print(line, file=sys.stderr)
+        sys.stderr.flush()
 
 
 def _log_stream_summary(upstream_text: str, client_text: str) -> None:
-    print(f"{_DIM}[upstream -> proxy stream text]{_RESET}", file=sys.stderr)
-    print(f"  {upstream_text!r}", file=sys.stderr)
-    print(f"{_GREEN}[proxy -> client stream text] (unmasked){_RESET}", file=sys.stderr)
-    print(f"  {client_text!r}", file=sys.stderr)
-    sys.stderr.flush()
+    if upstream_text != client_text:
+        print(
+            f"{_GREEN}[unmasked stream]{_RESET} {_trunc(upstream_text)} → {_trunc(client_text)}",
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
 
 _SKIP_REQUEST_HEADERS = {
     "host",
@@ -256,6 +310,14 @@ def main() -> None:
         help="Path to a JSON file of per-label merge-gap chars (label -> chars). "
              "Overrides entries in DEFAULT_MERGE_GAP_ALLOWED.",
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=int(os.environ.get("ANON_PROXY_CHUNK_SIZE", "1500")),
+        metavar="N",
+        help="Max characters per chunk fed to the model (default: 1500). "
+             "Lower values reduce peak GPU memory at the cost of more forward passes.",
+    )
     args = parser.parse_args()
 
     extra_detectors = []
@@ -268,13 +330,15 @@ def main() -> None:
         extra_detectors.append(RegexDetector(patterns))
 
     pf: PrivacyFilter | None = None
-    if args.merge_gap_file:
-        try:
-            merge_gap = load_merge_gap(args.merge_gap_file)
-        except (OSError, ValueError) as e:
-            print(f"error: {e}", file=sys.stderr)
-            sys.exit(2)
-        pf = PrivacyFilter(merge_gap_allowed=merge_gap)
+    if args.merge_gap_file or args.chunk_size != 1500:
+        merge_gap = None
+        if args.merge_gap_file:
+            try:
+                merge_gap = load_merge_gap(args.merge_gap_file)
+            except (OSError, ValueError) as e:
+                print(f"error: {e}", file=sys.stderr)
+                sys.exit(2)
+        pf = PrivacyFilter(merge_gap_allowed=merge_gap, chunk_size=args.chunk_size)
 
     masker = (
         Masker(filter=pf, extra_detectors=extra_detectors)

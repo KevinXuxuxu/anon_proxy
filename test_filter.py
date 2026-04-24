@@ -108,6 +108,14 @@ def main() -> int:
         help="Also print the pipeline's raw JSON output.",
     )
     parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=1500,
+        metavar="N",
+        help="Max characters per chunk fed to the model (default: 1500). "
+             "Lower values reduce peak GPU memory at the cost of more passes.",
+    )
+    parser.add_argument(
         "--device",
         default=None,
         help="Torch device, e.g. 'cpu', 'cuda', 'cuda:0'. Default: auto.",
@@ -130,6 +138,7 @@ def main() -> int:
         aggregation_strategy=args.aggregation,
         merge_adjacent=not args.no_merge,
         merge_gap_allowed=merge_gap_allowed,
+        chunk_size=args.chunk_size,
         device=args.device,
     )
     if merge_gap_allowed:
