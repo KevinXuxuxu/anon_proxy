@@ -101,6 +101,7 @@ Copy from the `.example` files to get started.
 ## Next steps / roadmap
 
 - **OpenAI-compatible adapter** — swap the Anthropic-specific SSE parser for an OpenAI adapter so any OpenAI SDK client works out of the box (ChatGPT, LangChain, etc.)
+- **Apple Silicon support** - enable running server with OpenAI privacy filter inference on Apple silicon, gives better support for self-hosting OpenClaw etc.
 - **Third-party chat clients** — route traffic from clients like Open WebUI or anything that targets an OpenAI endpoint through the proxy (needs the OpenAI adapter above)
 - **OpenRouter / multi-provider** — set `--upstream https://openrouter.ai/api` and add the OpenRouter auth header to cover non-Anthropic models
 - **Persistent store** — optionally write the token↔original dictionary to disk so placeholder mappings survive server restarts and span multiple sessions
