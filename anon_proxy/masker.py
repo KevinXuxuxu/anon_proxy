@@ -1,5 +1,6 @@
+import json
 import re
-from typing import Protocol
+from typing import Callable, Protocol
 
 from anon_proxy.mapping import PIIStore
 from anon_proxy.privacy_filter import PIIEntity, PrivacyFilter
@@ -46,6 +47,19 @@ class Masker:
         return text
 
     def unmask(self, text: str) -> str:
+        return self._sub(text, lambda s: s)
+
+    def unmask_json(self, text: str) -> str:
+        """Unmask tokens sitting inside a JSON string context.
+
+        Replacements are JSON-escaped so an original containing `"`, `\\`, or
+        control chars doesn't break the surrounding JSON. Use this for raw
+        JSON fragments like Anthropic's `input_json_delta.partial_json` where
+        the unmasked text flows through an unparsed string.
+        """
+        return self._sub(text, lambda s: json.dumps(s)[1:-1])
+
+    def _sub(self, text: str, transform: Callable[[str], str]) -> str:
         tokens = self._store.tokens()
         if not tokens:
             return text
@@ -53,7 +67,12 @@ class Masker:
         pattern = re.compile(
             "|".join(re.escape(t) for t in sorted(tokens, key=len, reverse=True))
         )
-        return pattern.sub(lambda m: self._store.original(m.group(0)) or m.group(0), text)
+
+        def repl(m: re.Match[str]) -> str:
+            original = self._store.original(m.group(0))
+            return transform(original) if original is not None else m.group(0)
+
+        return pattern.sub(repl, text)
 
 
 def _resolve_overlaps(entities: list[PIIEntity]) -> list[PIIEntity]:

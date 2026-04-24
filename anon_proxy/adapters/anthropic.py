@@ -1,8 +1,17 @@
 """Anthropic Messages API request/response transforms.
 
-Only text fields are touched. Tool definitions, tool_use inputs, and tool_result
-content pass through untouched for v1 — a caller that hides PII inside a tool
-argument will leak it.
+Masked on outbound requests: `system` text, `messages[*].content` text blocks,
+`tool_use.input` string leaves (assistant history), and `tool_result.content`
+(string or nested text blocks).
+
+Unmasked on inbound responses: `text` blocks and `tool_use.input` string leaves
+(non-streaming); `text_delta.text` and `input_json_delta.partial_json`
+(streaming). Input-JSON deltas use JSON-escaped substitution so originals with
+quotes/backslashes don't corrupt the stream.
+
+Top-level `tools` (tool schemas) and `thinking` blocks are intentionally left
+alone — schemas are not data-bearing, and extended-thinking signatures are
+computed over the original text by upstream.
 """
 
 from __future__ import annotations
@@ -60,15 +69,55 @@ def _mask_message(message, masker: Masker):
 
 
 def _mask_block(block, masker: Masker):
-    if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+    if not isinstance(block, dict):
+        return block
+    btype = block.get("type")
+    if btype == "text" and isinstance(block.get("text"), str):
         return {**block, "text": masker.mask(block["text"])}
+    if btype == "tool_use":
+        input_val = block.get("input")
+        if isinstance(input_val, (dict, list)):
+            return {**block, "input": _walk_strings(input_val, masker.mask)}
+        return block
+    if btype == "tool_result":
+        content = block.get("content")
+        if isinstance(content, str):
+            return {**block, "content": masker.mask(content)}
+        if isinstance(content, list):
+            return {**block, "content": [_mask_block(b, masker) for b in content]}
+        return block
     return block
 
 
 def _unmask_block(block, masker: Masker):
-    if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+    if not isinstance(block, dict):
+        return block
+    btype = block.get("type")
+    if btype == "text" and isinstance(block.get("text"), str):
         return {**block, "text": masker.unmask(block["text"])}
+    if btype == "tool_use":
+        input_val = block.get("input")
+        if isinstance(input_val, (dict, list)):
+            return {**block, "input": _walk_strings(input_val, masker.unmask)}
+        return block
     return block
+
+
+def _walk_strings(value, transform):
+    """Apply `transform` to every string leaf of a JSON-shaped value."""
+    if isinstance(value, str):
+        return transform(value)
+    if isinstance(value, dict):
+        return {k: _walk_strings(v, transform) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_walk_strings(v, transform) for v in value]
+    return value
+
+
+_STREAM_HANDLERS: dict[str, dict] = {
+    "text":     {"delta_type": "text_delta",       "field": "text",         "escape": False},
+    "tool_use": {"delta_type": "input_json_delta", "field": "partial_json", "escape": True},
+}
 
 
 async def transform_stream(
@@ -78,18 +127,21 @@ async def transform_stream(
     on_upstream_text: TextHook | None = None,
     on_client_text: TextHook | None = None,
 ) -> AsyncIterator[bytes]:
-    """Unmask text_delta payloads in an Anthropic SSE stream.
+    """Unmask masked payloads in an Anthropic SSE stream.
+
+    Handles two block types: `text` (text_delta.text) and `tool_use`
+    (input_json_delta.partial_json, substituted with JSON-escaped originals).
 
     Placeholders like <PERSON_1> can split across chunks (`<PER` / `SON_1>`), so
     a per-block tail buffer holds back anything that might be an incomplete
     token (a trailing `<` with no matching `>`). The buffer is flushed as an
     injected delta event immediately before each content_block_stop.
 
-    `on_upstream_text` fires with each raw text-delta fragment as it arrives
-    from upstream; `on_client_text` fires with each fragment emitted to the
-    client (post-unmask). Both are optional hooks for debug/logging.
+    `on_upstream_text` fires with each raw masked fragment as it arrives from
+    upstream; `on_client_text` fires with each fragment emitted to the client
+    (post-unmask). Both are optional hooks for debug/logging.
     """
-    buffers: dict[int, str] = {}
+    blocks: dict[int, dict] = {}
     raw = b""
     async for chunk in upstream_bytes:
         raw += chunk
@@ -97,7 +149,7 @@ async def transform_stream(
             event_bytes, raw = raw.split(b"\n\n", 1)
             event_type, data_str = _parse_sse(event_bytes)
             for out_event, out_data in _transform_event(
-                event_type, data_str, masker, buffers, on_upstream_text, on_client_text,
+                event_type, data_str, masker, blocks, on_upstream_text, on_client_text,
             ):
                 yield _serialize_sse(out_event, out_data)
     if raw.strip():
@@ -136,7 +188,7 @@ def _transform_event(
     event_type,
     data_str,
     masker: Masker,
-    buffers: dict[int, str],
+    blocks: dict[int, dict],
     on_upstream_text: TextHook | None,
     on_client_text: TextHook | None,
 ):
@@ -149,42 +201,65 @@ def _transform_event(
         yield event_type, data_str
         return
 
-    if event_type == "content_block_delta":
-        delta = data.get("delta") or {}
+    if event_type == "content_block_start":
         idx = data.get("index", 0)
-        if delta.get("type") == "text_delta":
-            piece = delta.get("text") or ""
+        cb = data.get("content_block") or {}
+        handler = _STREAM_HANDLERS.get(cb.get("type"))
+        if handler:
+            blocks[idx] = {**handler, "buffer": ""}
+            # tool_use may carry non-empty initial input — unmask it in place.
+            if cb.get("type") == "tool_use":
+                input_val = cb.get("input")
+                if isinstance(input_val, (dict, list)) and input_val:
+                    new_cb = {**cb, "input": _walk_strings(input_val, masker.unmask)}
+                    yield event_type, json.dumps({**data, "content_block": new_cb})
+                    return
+        yield event_type, data_str
+        return
+
+    if event_type == "content_block_delta":
+        idx = data.get("index", 0)
+        delta = data.get("delta") or {}
+        state = blocks.get(idx)
+        if state and delta.get("type") == state["delta_type"]:
+            field = state["field"]
+            piece = delta.get(field) or ""
             if on_upstream_text and piece:
                 on_upstream_text(piece)
-            buf = buffers.get(idx, "") + piece
+            buf = state["buffer"] + piece
             emittable, remainder = _split_emit(buf)
-            buffers[idx] = remainder
+            state["buffer"] = remainder
             if emittable:
-                unmasked = masker.unmask(emittable)
+                unmasked = _unmask_for(masker, emittable, state["escape"])
                 if on_client_text:
                     on_client_text(unmasked)
-                new_data = {**data, "delta": {**delta, "text": unmasked}}
+                new_data = {**data, "delta": {**delta, field: unmasked}}
                 yield event_type, json.dumps(new_data)
             return
+        yield event_type, data_str
+        return
 
     if event_type == "content_block_stop":
         idx = data.get("index", 0)
-        remainder = buffers.get(idx, "")
-        if remainder:
-            buffers[idx] = ""
-            unmasked = masker.unmask(remainder)
+        state = blocks.pop(idx, None)
+        if state and state["buffer"]:
+            unmasked = _unmask_for(masker, state["buffer"], state["escape"])
             if on_client_text:
                 on_client_text(unmasked)
             flush = {
                 "type": "content_block_delta",
                 "index": idx,
-                "delta": {"type": "text_delta", "text": unmasked},
+                "delta": {"type": state["delta_type"], state["field"]: unmasked},
             }
             yield "content_block_delta", json.dumps(flush)
         yield event_type, json.dumps(data)
         return
 
     yield event_type, data_str
+
+
+def _unmask_for(masker: Masker, text: str, escape: bool) -> str:
+    return masker.unmask_json(text) if escape else masker.unmask(text)
 
 
 def _split_emit(buf: str) -> tuple[str, str]:
