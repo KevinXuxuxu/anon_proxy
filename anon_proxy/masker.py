@@ -10,6 +10,15 @@ class Detector(Protocol):
     def detect(self, text: str) -> list[PIIEntity]: ...
 
 
+class TelemetrySink(Protocol):
+    def observe(
+        self,
+        text: str,
+        ml_entities: list[PIIEntity],
+        extra_entities: list[PIIEntity],
+    ) -> None: ...
+
+
 class Masker:
     """Composes PrivacyFilter + PIIStore to mask outgoing text and unmask LLM replies.
 
@@ -19,6 +28,10 @@ class Masker:
     `extra_detectors` is a list of objects with a `detect(text) -> list[PIIEntity]`
     method whose spans are merged into the primary filter's output. Overlapping
     spans from different detectors are resolved by preferring the longer span.
+
+    `telemetry` is an optional observer that sees the raw ML output and the
+    user's configured regex output for each mask() call. It never affects
+    masking behavior — see `anon_proxy.telemetry`.
     """
 
     def __init__(
@@ -26,20 +39,25 @@ class Masker:
         filter: PrivacyFilter | None = None,
         store: PIIStore | None = None,
         extra_detectors: list[Detector] | None = None,
+        telemetry: TelemetrySink | None = None,
     ) -> None:
         self._filter = filter or PrivacyFilter()
         self._store = store or PIIStore()
         self._extra: list[Detector] = list(extra_detectors or [])
+        self._telemetry = telemetry
 
     @property
     def store(self) -> PIIStore:
         return self._store
 
     def mask(self, text: str) -> str:
-        entities: list[PIIEntity] = list(self._filter.detect(text))
+        ml_entities: list[PIIEntity] = list(self._filter.detect(text))
+        extra_entities: list[PIIEntity] = []
         for detector in self._extra:
-            entities.extend(detector.detect(text))
-        entities = _resolve_overlaps(entities)
+            extra_entities.extend(detector.detect(text))
+        if self._telemetry is not None:
+            self._telemetry.observe(text, ml_entities, extra_entities)
+        entities = _resolve_overlaps(ml_entities + extra_entities)
         # Replace right-to-left so earlier spans' offsets stay valid.
         for e in sorted(entities, key=lambda x: x.start, reverse=True):
             token = self._store.get_or_create(e.label, e.text).token
