@@ -1,3 +1,5 @@
+<img width="108" height="112" alt="anon" src="https://github.com/user-attachments/assets/6609f7ff-3e0b-458d-ac20-2f1b0b95ae62" />
+
 # anon-proxy
 
 An LLM API proxy that masks PII before requests leave your device and unmasks it in responses. The [openai/privacy-filter](https://huggingface.co/openai/privacy-filter) model runs **locally** — raw PII never reaches the upstream API.
