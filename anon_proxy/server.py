@@ -15,6 +15,7 @@ import json
 import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from starlette.applications import Starlette
@@ -26,6 +27,12 @@ from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.masker import Masker
 from anon_proxy.privacy_filter import PrivacyFilter, load_merge_gap
 from anon_proxy.regex_detector import RegexDetector, load_patterns
+from anon_proxy.telemetry import (
+    DEFAULT_PATH as TELEMETRY_DEFAULT_PATH,
+    JSONLWriter,
+    TelemetryObserver,
+    default_detector as default_telemetry_detector,
+)
 
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 
@@ -318,6 +325,19 @@ def main() -> None:
         help="Max characters per chunk fed to the model (default: 1500). "
              "Lower values reduce peak GPU memory at the cost of more forward passes.",
     )
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_TELEMETRY", "").lower() in ("1", "true", "yes"),
+        help="Write one JSON record per mask() call to a local JSONL log (no PII content, "
+             "only labels/lengths/positions). Run `python -m anon_proxy.telemetry_report` "
+             "to summarize.",
+    )
+    parser.add_argument(
+        "--telemetry-path",
+        default=os.environ.get("ANON_PROXY_TELEMETRY_PATH"),
+        help=f"Telemetry log path (default: {TELEMETRY_DEFAULT_PATH}). Ignored unless --telemetry is set.",
+    )
     args = parser.parse_args()
 
     extra_detectors = []
@@ -340,9 +360,21 @@ def main() -> None:
                 sys.exit(2)
         pf = PrivacyFilter(merge_gap_allowed=merge_gap, chunk_size=args.chunk_size)
 
+    telemetry_observer: TelemetryObserver | None = None
+    telemetry_path = None
+    if args.telemetry:
+        telemetry_path = (
+            Path(args.telemetry_path) if args.telemetry_path else TELEMETRY_DEFAULT_PATH
+        )
+        telemetry_observer = TelemetryObserver(
+            detector=default_telemetry_detector(),
+            sink=JSONLWriter(telemetry_path),
+            chunk_size=args.chunk_size,
+        )
+
     masker = (
-        Masker(filter=pf, extra_detectors=extra_detectors)
-        if (pf is not None or extra_detectors)
+        Masker(filter=pf, extra_detectors=extra_detectors, telemetry=telemetry_observer)
+        if (pf is not None or extra_detectors or telemetry_observer is not None)
         else None
     )
     app = build_app(masker=masker, upstream=args.upstream, debug=args.debug)
@@ -352,6 +384,7 @@ def main() -> None:
         f"  debug: {args.debug}\n"
         f"  patterns: {args.patterns or '(none)'}\n"
         f"  merge-gap-file: {args.merge_gap_file or '(defaults)'}\n"
+        f"  telemetry: {telemetry_path or '(off)'}\n"
         f"  point your Anthropic SDK at http://{args.host}:{args.port} via base_url",
         flush=True,
     )

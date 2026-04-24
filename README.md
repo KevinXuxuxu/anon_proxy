@@ -68,8 +68,10 @@ uv run python -m anon_proxy.server [options]
 | `--patterns <file>` | — | JSON file of extra regex detectors: `{"LABEL": "regex", ...}` |
 | `--merge-gap-file <file>` | — | JSON file overriding per-label adjacency merge chars (see `merge_gap.json.example`) |
 | `--chunk-size <N>` | `1500` | Max chars per model inference pass — lower values reduce peak VRAM |
+| `--telemetry` | off | Log one JSON record per masked request to a local JSONL file (no PII content) |
+| `--telemetry-path <file>` | `~/.anon-proxy/telemetry.jsonl` | Override telemetry log path |
 
-All flags have `ANON_PROXY_*` env-var equivalents (`ANON_PROXY_HOST`, `ANON_PROXY_PORT`, `ANON_PROXY_UPSTREAM`, `ANON_PROXY_DEBUG=1`, `ANON_PROXY_PATTERNS`, `ANON_PROXY_MERGE_GAP`, `ANON_PROXY_CHUNK_SIZE`).
+All flags have `ANON_PROXY_*` env-var equivalents (`ANON_PROXY_HOST`, `ANON_PROXY_PORT`, `ANON_PROXY_UPSTREAM`, `ANON_PROXY_DEBUG=1`, `ANON_PROXY_PATTERNS`, `ANON_PROXY_MERGE_GAP`, `ANON_PROXY_CHUNK_SIZE`, `ANON_PROXY_TELEMETRY=1`, `ANON_PROXY_TELEMETRY_PATH`).
 
 **With all config files:**
 ```bash
@@ -124,6 +126,49 @@ With `--debug`, each request prints a compact diff to stderr:
 Copy from the `.example` files to get started.
 
 ---
+
+## Telemetry (optional)
+
+The ML detector can silently miss PII — especially clue-less values like bare phone numbers or pasted tokens. To measure how often this happens *on your actual traffic*, run the proxy with `--telemetry`:
+
+```bash
+uv run python -m anon_proxy.server --telemetry
+```
+
+One JSON record per masked request is appended to `~/.anon-proxy/telemetry.jsonl`. Records contain labels, lengths, and positions only — never the original PII value, never a slice of the request text. A built-in conservative regex set (email / phone / SSN / IPv4 / IPv6) is run alongside the ML detector and flags any span the model missed.
+
+After a day or two of normal use, summarize the log:
+
+```bash
+uv run python -m anon_proxy.telemetry_report
+```
+
+```
+2,147 requests
+  avg request:   1,843 chars, 1.40 chunks (312 multi-chunk, 15%)
+
+ML detector: 8,412 spans
+  private_person  4,281
+  private_email   2,104
+  ...
+
+Baseline regex caught but detectors missed: 47 spans
+  PHONE_NANP   41
+  EMAIL         3
+  SSN          18
+
+Miss characterization:
+  no detector span within 50ch (isolated):     42 ( 89%)
+  nearest detector span had the same label:     2 (  4%)  (suggests boundary / fragmentation)
+  in outer 10% of a chunk (possible boundary):  3 (  6%)
+```
+
+Interpretation:
+- **Mostly "isolated" misses** → clue-less PII is the dominant failure mode; consider enabling the regex detectors as real maskers via `--patterns`.
+- **Many "same-label nearby" misses** → the model fragmented a span and merge-gap didn't stitch it; adjust `--merge-gap-file`.
+- **Many "outer 10% of chunk" misses** → chunk boundaries are stripping context; raise `--chunk-size`.
+
+If you want stricter regex coverage (e.g. international phone formats), pass your own via `--patterns` — user regexes count as "caught" in telemetry, so the log shows you what's *still* leaking after every configured layer runs.
 
 ## Next steps / roadmap
 
