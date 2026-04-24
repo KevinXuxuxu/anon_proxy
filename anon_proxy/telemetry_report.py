@@ -2,6 +2,10 @@
 
 Usage:
     uv run python -m anon_proxy.telemetry_report [--path PATH]
+
+Each line in the log is one API request (one `POST /v1/messages`) — records
+are aggregated across all mask() leaf calls within that request by the
+`Masker.request_scope()` context manager.
 """
 
 from __future__ import annotations
@@ -71,29 +75,26 @@ def _render(records: list[dict], path: Path) -> None:
     miss_total = 0
     isolated = 0
     nearest_same_label = 0
-    boundary_zone = 0  # missed within first/last 100 chars of any chunk
-    per_chunk_idx: Counter[int] = Counter()
+    boundary_zone_hits = 0
     for r in records:
         for m in r.get("regex_missed", []):
             miss_labels[m["label"]] += 1
             miss_total += 1
             if not m.get("ml_within_50ch"):
                 isolated += 1
-            if m.get("nearest_ml_label") and m.get("nearest_ml_label").upper() == m["label"].upper():
+            nearest_label = m.get("nearest_ml_label")
+            if nearest_label and nearest_label.upper() == m["label"].upper():
                 nearest_same_label += 1
-            per_chunk_idx[m.get("chunk_idx", 0)] += 1
-            # Positional zone near chunk boundary — req_chars * (pos_pct % (1/chunks))
-            chunks = r.get("req_chunks", 1) or 1
-            if chunks > 1:
-                within_chunk = (m.get("pos_pct", 0) * chunks) % 1
-                if within_chunk < 0.1 or within_chunk > 0.9:
-                    boundary_zone += 1
+            if m.get("boundary_zone"):
+                boundary_zone_hits += 1
 
     print(f"{path}\n")
-    print(f"{n:,} requests")
-    print(f"  avg request:   {total_chars // n if n else 0:,} chars, "
-          f"{total_chunks / n if n else 0:.2f} chunks "
-          f"({multi_chunk:,} multi-chunk, {100 * multi_chunk / n if n else 0:.0f}%)")
+    print(f"{n:,} API requests")
+    print(
+        f"  avg request:   {total_chars // n if n else 0:,} chars, "
+        f"{total_chunks / n if n else 0:.2f} chunks "
+        f"({multi_chunk:,} multi-chunk, {100 * multi_chunk / n if n else 0:.0f}%)"
+    )
     print()
 
     total_ml = sum(ml_labels.values())
@@ -118,11 +119,15 @@ def _render(records: list[dict], path: Path) -> None:
 
     pct = lambda x: (100 * x / miss_total) if miss_total else 0.0
     print("Miss characterization:")
-    print(f"  no detector span within 50ch (isolated):     {isolated:>5,} ({pct(isolated):>4.0f}%)")
-    print(f"  nearest detector span had the same label:    {nearest_same_label:>5,} "
-          f"({pct(nearest_same_label):>4.0f}%)  (suggests boundary / fragmentation)")
-    if any(r.get("req_chunks", 1) > 1 for r in records):
-        print(f"  in outer 10% of a chunk (possible boundary): {boundary_zone:>5,} ({pct(boundary_zone):>4.0f}%)")
+    print(f"  no detector span within 50ch (isolated):   {isolated:>5,} ({pct(isolated):>4.0f}%)")
+    print(
+        f"  nearest detector span same label:          {nearest_same_label:>5,} "
+        f"({pct(nearest_same_label):>4.0f}%)  (suggests fragmentation)"
+    )
+    print(
+        f"  within 50ch of a real chunk boundary:      {boundary_zone_hits:>5,} "
+        f"({pct(boundary_zone_hits):>4.0f}%)  (suggests chunking cost)"
+    )
     print()
     print("Interpretation:")
     if isolated / miss_total > 0.5:
@@ -132,6 +137,9 @@ def _render(records: list[dict], path: Path) -> None:
         print("  → A sizeable fraction of misses have a same-label detector span nearby.")
         print("    Likely boundary fragmentation — worth tightening merge-gap config or")
         print("    running the baseline regex as a real detector, not just an observer.")
+    if boundary_zone_hits and boundary_zone_hits / miss_total > 0.3:
+        print("  → Many misses cluster near real chunk boundaries — raise --chunk-size")
+        print("    or overlap chunks to give the model more context per pass.")
 
 
 if __name__ == "__main__":

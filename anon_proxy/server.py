@@ -363,13 +363,17 @@ def main() -> None:
     telemetry_observer: TelemetryObserver | None = None
     telemetry_path = None
     if args.telemetry:
+        # Ensure we have a PrivacyFilter so the observer can see the real chunk
+        # splits rather than guessing via len(text) // chunk_size.
+        if pf is None:
+            pf = PrivacyFilter(chunk_size=args.chunk_size)
         telemetry_path = (
             Path(args.telemetry_path) if args.telemetry_path else TELEMETRY_DEFAULT_PATH
         )
         telemetry_observer = TelemetryObserver(
             detector=default_telemetry_detector(),
             sink=JSONLWriter(telemetry_path),
-            chunk_size=args.chunk_size,
+            chunker=pf.chunk_ranges,
         )
 
     masker = (
