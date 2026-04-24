@@ -14,12 +14,27 @@ your client  →  anon-proxy (mask)  →  api.anthropic.com
 ## Quick demo
 
 ```bash
+# test the PII detector interactively
+uv run python test_filter.py "Alice Smith called from 555-867-5309, email alice@company.com"
+```
+```
+[PERSON:Alice Smith] called from [PHONE:555-867-5309], email [EMAIL:alice@company.com]
+
+  PERSON       'Alice Smith'          score=0.999  offset=0-11
+  PHONE        '555-867-5309'         score=0.997  offset=24-36
+  EMAIL        'alice@company.com'    score=0.999  offset=45-62
+```
+
+```bash
 # interactive chat through the mask/unmask layer (needs ANTHROPIC_API_KEY)
 uv run python test_mask.py
+```
+```
+you[1]> My name is Alice Smith. Summarize this note from bob@acme.com.
+  sending -> My name is <PERSON_1>. Summarize this note from <EMAIL_1>.
 
-# test the PII detector interactively
-uv run python test_filter.py
-uv run python test_filter.py "My name is Alice Smith, email alice@example.com"
+claude[1]> Sure <PERSON_1>, here's the summary of the note from <EMAIL_1>: ...
+  rendered -> Sure Alice Smith, here's the summary of the note from bob@acme.com: ...
 ```
 
 ---
@@ -78,6 +93,18 @@ uv run python -m anon_proxy.server \
    export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
    ```
 3. No other changes — the proxy forwards your auth headers unchanged.
+
+With `--debug`, each request prints a compact diff to stderr:
+```
+==== POST /v1/messages | model=claude-opus-4-7 | 3 msg ====
+[store +2]
+  <PERSON_1>  ←  'Alice Smith'
+  <EMAIL_1>   ←  'alice@company.com'
+[masked]
+  user[2] text: 'Fix the bug reported by Alice Smith (alice@company.com)…'
+              → 'Fix the bug reported by <PERSON_1> (<EMAIL_1>)…'
+[unmasked stream] 'I'll fix the bug for <PERSON_1>…' → 'I'll fix the bug for Alice Smith…'
+```
 
 **What gets protected:** every user and assistant message turn — text content, tool call inputs (`tool_use.input`), and tool results (`tool_result.content`). File contents, shell output, names, emails, paths containing PII are all masked before leaving your machine.
 
