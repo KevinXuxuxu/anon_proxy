@@ -31,7 +31,7 @@ import anthropic
 from prompt_toolkit import ANSI, PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 
-from anon_proxy import Masker, RegexDetector, load_patterns
+from anon_proxy import Masker, PrivacyFilter, RegexDetector, load_merge_gap, load_patterns
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant. The user's messages may contain placeholder "
@@ -110,6 +110,12 @@ def main() -> int:
         default=None,
         help="Path to a JSON file of additional regex patterns (label -> regex).",
     )
+    parser.add_argument(
+        "--merge-gap-file",
+        default=None,
+        help="Path to a JSON file of per-label merge-gap chars (label -> chars). "
+             "Overrides entries in DEFAULT_MERGE_GAP_ALLOWED.",
+    )
     args = parser.parse_args()
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -134,7 +140,15 @@ def main() -> int:
                 print(f"{RED}error:{RESET} {e}", file=sys.stderr)
                 return 2
             extra_detectors.append(RegexDetector(patterns))
-        masker = Masker(extra_detectors=extra_detectors)
+        pf: PrivacyFilter | None = None
+        if args.merge_gap_file:
+            try:
+                merge_gap = load_merge_gap(args.merge_gap_file)
+            except (OSError, ValueError) as e:
+                print(f"{RED}error:{RESET} {e}", file=sys.stderr)
+                return 2
+            pf = PrivacyFilter(merge_gap_allowed=merge_gap)
+        masker = Masker(filter=pf, extra_detectors=extra_detectors)
     client = anthropic.Anthropic()
     base_url = os.environ.get("ANTHROPIC_BASE_URL")
     status_bits = [f"model={args.model}"]

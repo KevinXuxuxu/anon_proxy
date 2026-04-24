@@ -1,0 +1,10 @@
+{
+  "PERSON":       " \t\n-'.",
+  "ADDRESS":      " \t\n,.#-/",
+  "DATE":         " \t\n,/.-",
+  "ORGANIZATION": " \t\n&.,-",
+  "LOCATION":     " \t\n,.-",
+  "EMAIL":        "",
+  "PHONE":        "",
+  "URL":          ""
+}

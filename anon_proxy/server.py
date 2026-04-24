@@ -24,6 +24,7 @@ from starlette.routing import Route
 
 from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.masker import Masker
+from anon_proxy.privacy_filter import PrivacyFilter, load_merge_gap
 from anon_proxy.regex_detector import RegexDetector, load_patterns
 
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
@@ -249,6 +250,12 @@ def main() -> None:
         default=os.environ.get("ANON_PROXY_PATTERNS"),
         help="Path to a JSON file of additional regex patterns (label -> regex).",
     )
+    parser.add_argument(
+        "--merge-gap-file",
+        default=os.environ.get("ANON_PROXY_MERGE_GAP"),
+        help="Path to a JSON file of per-label merge-gap chars (label -> chars). "
+             "Overrides entries in DEFAULT_MERGE_GAP_ALLOWED.",
+    )
     args = parser.parse_args()
 
     extra_detectors = []
@@ -260,13 +267,27 @@ def main() -> None:
             sys.exit(2)
         extra_detectors.append(RegexDetector(patterns))
 
-    masker = Masker(extra_detectors=extra_detectors) if extra_detectors else None
+    pf: PrivacyFilter | None = None
+    if args.merge_gap_file:
+        try:
+            merge_gap = load_merge_gap(args.merge_gap_file)
+        except (OSError, ValueError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(2)
+        pf = PrivacyFilter(merge_gap_allowed=merge_gap)
+
+    masker = (
+        Masker(filter=pf, extra_detectors=extra_detectors)
+        if (pf is not None or extra_detectors)
+        else None
+    )
     app = build_app(masker=masker, upstream=args.upstream, debug=args.debug)
     print(
         f"anon-proxy listening on http://{args.host}:{args.port}\n"
         f"  upstream: {args.upstream}\n"
         f"  debug: {args.debug}\n"
         f"  patterns: {args.patterns or '(none)'}\n"
+        f"  merge-gap-file: {args.merge_gap_file or '(defaults)'}\n"
         f"  point your Anthropic SDK at http://{args.host}:{args.port} via base_url",
         flush=True,
     )

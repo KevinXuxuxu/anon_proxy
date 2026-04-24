@@ -1,4 +1,6 @@
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
 
 from transformers import pipeline
@@ -13,6 +15,23 @@ class PIIEntity:
     score: float
 
 
+# Per-label characters allowed inside the gap between two adjacent same-label
+# spans when deciding whether to merge them. Labels absent from this map can
+# only merge across an empty gap.
+DEFAULT_MERGE_GAP_ALLOWED: dict[str, str] = {
+    # Names: space for "Alice Smith", hyphen for "Jean-Luc", apostrophe for
+    # "O'Neil", period for "J.R.".
+    "PERSON":       " \t\n-'.",
+    # Addresses: whitespace plus the punctuation that commonly splits a
+    # single postal address — "123 Main St., Apt #4", "Suite 3B-1".
+    "ADDRESS":      " \t\n,.#-/",
+    # Dates: "Jan 1, 2025", "2025-01-01", "1/1/25".
+    "DATE":         " \t\n,/.-",
+    "ORGANIZATION": " \t\n&.,-",
+    "LOCATION":     " \t\n,.-",
+}
+
+
 class PrivacyFilter:
     """Thin wrapper around the openai/privacy-filter token classifier.
 
@@ -21,6 +40,14 @@ class PrivacyFilter:
     spans ("Alice" + "Smith" → "Alice Smith", "alice@example" + ".com" →
     "alice@example.com") so each entity maps to one placeholder downstream.
     That second merge pass is `merge_adjacent`, on by default.
+
+    The merge rule is per-label: two same-label spans merge iff either the
+    gap between them is empty, or every character of the gap appears in that
+    label's allowed-char set. Defaults live in `DEFAULT_MERGE_GAP_ALLOWED`
+    (whitespace is NOT automatically mergeable — it has to be in the label's
+    entry). Pass `merge_gap_allowed` to override per-label entries; labels
+    you don't mention keep their default, and labels you set to `""` can only
+    merge across an empty gap.
     """
 
     MODEL_ID = "openai/privacy-filter"
@@ -30,6 +57,7 @@ class PrivacyFilter:
         *,
         aggregation_strategy: str = "simple",
         merge_adjacent: bool = True,
+        merge_gap_allowed: dict[str, str] | None = None,
         device: int | str | None = None,
     ) -> None:
         self._pipe = pipeline(
@@ -39,11 +67,15 @@ class PrivacyFilter:
             device=device,
         )
         self._merge_adjacent = merge_adjacent
+        merged_policy = {**DEFAULT_MERGE_GAP_ALLOWED, **(merge_gap_allowed or {})}
+        self._gap_allowed: dict[str, frozenset[str]] = {
+            label: frozenset(chars) for label, chars in merged_policy.items()
+        }
 
     def detect(self, text: str) -> list[PIIEntity]:
         entities = [_to_entity(r, text) for r in self._pipe(text)]
         if self._merge_adjacent:
-            entities = _merge_adjacent_entities(entities, text)
+            entities = _merge_adjacent_entities(entities, text, self._gap_allowed)
         return entities
 
     def detect_raw(self, text: str) -> list[dict]:
@@ -57,7 +89,7 @@ class PrivacyFilter:
         for t, res in zip(texts, results):
             entities = [_to_entity(r, t) for r in res]
             if self._merge_adjacent:
-                entities = _merge_adjacent_entities(entities, t)
+                entities = _merge_adjacent_entities(entities, t, self._gap_allowed)
             out.append(entities)
         return out
 
@@ -74,7 +106,11 @@ def _to_entity(raw: dict, original: str) -> PIIEntity:
     )
 
 
-def _merge_adjacent_entities(entities: list[PIIEntity], original: str) -> list[PIIEntity]:
+def _merge_adjacent_entities(
+    entities: list[PIIEntity],
+    original: str,
+    gap_allowed: dict[str, frozenset[str]] | None = None,
+) -> list[PIIEntity]:
     if not entities:
         return entities
     ordered = sorted(entities, key=lambda e: e.start)
@@ -83,7 +119,7 @@ def _merge_adjacent_entities(entities: list[PIIEntity], original: str) -> list[P
         if merged:
             prev = merged[-1]
             gap = original[prev.end : e.start]
-            if prev.label == e.label and (gap == "" or gap.isspace()):
+            if prev.label == e.label and _gap_mergeable(prev.label, gap, gap_allowed):
                 start, end = _tighten(prev.start, e.end, original)
                 merged[-1] = PIIEntity(
                     label=prev.label,
@@ -95,6 +131,43 @@ def _merge_adjacent_entities(entities: list[PIIEntity], original: str) -> list[P
                 continue
         merged.append(e)
     return merged
+
+
+def _gap_mergeable(
+    label: str,
+    gap: str,
+    gap_allowed: dict[str, frozenset[str]] | None,
+) -> bool:
+    """Empty gap always merges. Otherwise every character of the gap must be
+    in `gap_allowed[label]` — whitespace is not a built-in pass; it only
+    counts if the label's allowed set includes it.
+    """
+    if gap == "":
+        return True
+    allowed = (gap_allowed or {}).get(label)
+    if not allowed:
+        return False
+    return all(c in allowed for c in gap)
+
+
+def load_merge_gap(path: str | Path) -> dict[str, str]:
+    """Parse a merge-gap config JSON file into `{label: allowed_chars}`.
+
+    Shape: a flat JSON object mapping label -> string of allowed characters.
+    Empty string is allowed and means "only empty gap merges for this label".
+    Raises ValueError on bad shape.
+    """
+    raw = Path(path).read_text(encoding="utf-8")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{path}: invalid JSON — {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a JSON object mapping label -> chars")
+    bad = [k for k, v in data.items() if not (isinstance(k, str) and isinstance(v, str))]
+    if bad:
+        raise ValueError(f"{path}: non-string label or chars for keys: {bad!r}")
+    return data
 
 
 def _tighten(start: int, end: int, original: str) -> tuple[int, int]:
