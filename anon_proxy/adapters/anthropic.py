@@ -30,12 +30,16 @@ def mask_request(body: dict, masker: Masker) -> dict:
     Only touches `messages[*].content` — user/assistant text, tool_use.input,
     and tool_result.content. The system prompt is left intact because it
     contains static tool definitions and instructions, not user data.
+
+    All Masker.mask() calls for this request are aggregated into a single
+    telemetry record via masker.request_scope().
     """
-    result = dict(body)
-    messages = body.get("messages")
-    if isinstance(messages, list):
-        result["messages"] = [_mask_message(m, masker) for m in messages]
-    return result
+    with masker.request_scope():
+        result = dict(body)
+        messages = body.get("messages")
+        if isinstance(messages, list):
+            result["messages"] = [_mask_message(m, masker) for m in messages]
+        return result
 
 
 def unmask_response(body: dict, masker: Masker) -> dict:

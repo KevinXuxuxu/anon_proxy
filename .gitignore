@@ -11,3 +11,4 @@ wheels/
 
 fzxu_git.sh
 *.json
+!anon_proxy/telemetry_patterns.json
