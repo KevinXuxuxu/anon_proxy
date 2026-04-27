@@ -329,7 +329,7 @@ def main() -> None:
         "--telemetry",
         action="store_true",
         default=os.environ.get("ANON_PROXY_TELEMETRY", "").lower() in ("1", "true", "yes"),
-        help="Write one JSON record per mask() call to a local JSONL log (no PII content, "
+        help="Write one JSON record per API request to a local JSONL log (no PII content, "
              "only labels/lengths/positions). Run `python -m anon_proxy.telemetry_report` "
              "to summarize.",
     )

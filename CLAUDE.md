@@ -50,6 +50,8 @@ Server flags (all have `ANON_PROXY_*` env var equivalents):
 - `--patterns <file>` — JSON file of extra regex detectors
 - `--merge-gap-file <file>` — per-label adjacency merge chars
 - `--chunk-size <N>` — max chars per model inference pass (default: 1500)
+- `--telemetry` — opt-in: write one JSON record per API request to `~/.anon-proxy/telemetry.jsonl` (no PII content, only labels/lengths/positions)
+- `--telemetry-path <file>` — override the telemetry log path
 
 ## Toolchain
 
