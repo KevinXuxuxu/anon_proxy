@@ -73,3 +73,41 @@ class ResolveResult:
 
 class OverlapPolicy(Protocol):
     def resolve(self, spans: list[AttributedSpan]) -> ResolveResult: ...
+
+
+class GreedyLongerWins:
+    """Sort by (start asc, length desc, score desc, label); walk left-to-right.
+
+    On overlap with the last-kept span, replace iff the new span is strictly
+    longer; on length tie, replace iff strictly higher score. Touching spans
+    (`prev.end == next.start`) are treated as disjoint. Mirrors the existing
+    `masker._resolve_overlaps` exactly so this refactor preserves output.
+    """
+
+    def resolve(self, spans: list[AttributedSpan]) -> ResolveResult:
+        if not spans:
+            return ResolveResult(kept=[], events=[])
+
+        ordered = sorted(
+            spans,
+            key=lambda s: (s.start, -s.length, -s.entity.score, s.label),
+        )
+        kept: list[AttributedSpan] = []
+        events: list[OverlapEvent] = []
+        for cand in ordered:
+            if kept and cand.start < kept[-1].end:
+                prev = kept[-1]
+                if cand.length > prev.length:
+                    events.append(OverlapEvent(winner=cand, loser=prev, reason="overlap_longer"))
+                    kept[-1] = cand
+                elif cand.length == prev.length:
+                    if cand.entity.score > prev.entity.score:
+                        events.append(OverlapEvent(winner=cand, loser=prev, reason="overlap_score_tie"))
+                        kept[-1] = cand
+                    else:
+                        events.append(OverlapEvent(winner=prev, loser=cand, reason="overlap_score_tie"))
+                else:
+                    events.append(OverlapEvent(winner=prev, loser=cand, reason="overlap_longer"))
+                continue
+            kept.append(cand)
+        return ResolveResult(kept=kept, events=events)
