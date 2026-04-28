@@ -8,7 +8,6 @@ from anon_proxy.mapping import PIIStore
 from anon_proxy.pipeline import (
     AttributedSpan,
     GreedyLongerWins,
-    OverlapEvent,
     OverlapPolicy,
     ResolveResult,
 )
@@ -103,7 +102,7 @@ class Masker:
 
     def _observe(
         self,
-        sink,
+        sink: object,
         text: str,
         ml_spans: list[AttributedSpan],
         user_spans: list[AttributedSpan],
