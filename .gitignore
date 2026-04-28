@@ -12,3 +12,8 @@ wheels/
 fzxu_git.sh
 *.json
 !anon_proxy/telemetry_patterns.json
+!anon_proxy/eval_corpus/*.jsonl
+
+# Local-only working dirs
+.worktrees/
+docs/
