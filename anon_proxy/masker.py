@@ -5,6 +5,13 @@ from contextvars import ContextVar
 from typing import Callable, Iterator, Protocol
 
 from anon_proxy.mapping import PIIStore
+from anon_proxy.pipeline import (
+    AttributedSpan,
+    GreedyLongerWins,
+    OverlapEvent,
+    OverlapPolicy,
+    ResolveResult,
+)
 from anon_proxy.privacy_filter import PIIEntity, PrivacyFilter
 
 
@@ -23,27 +30,23 @@ class TelemetrySink(Protocol):
     def new_batch(self) -> "TelemetrySink": ...
 
 
-# Per-request telemetry batch. An async-safe contextvar so multiple in-flight
-# requests (streaming, tool calls) don't cross-contaminate each other's logs.
+# Per-request telemetry batch. ContextVar so async tasks don't cross-contaminate.
 _current_batch: ContextVar[object | None] = ContextVar(
     "anon_proxy_telemetry_batch", default=None
 )
 
 
 class Masker:
-    """Composes PrivacyFilter + PIIStore to mask outgoing text and unmask LLM replies.
+    """Five-stage pipeline: detect_ml → detect_user → (detect_baseline, observer) → resolve → replace.
 
-    One Masker instance per conversation: the store accumulates entities across
-    turns so the same PII always gets the same placeholder.
+    Stages are named methods (`_detect_ml`, `_detect_user`, `_detect_baseline`,
+    `_resolve`, `_replace`) so each one has a single responsibility and can be
+    tested or swapped in isolation. See docs/.../pii-pipeline-clarity-...md
+    for the architecture diagram.
 
-    `extra_detectors` is a list of objects with a `detect(text) -> list[PIIEntity]`
-    method whose spans are merged into the primary filter's output. Overlapping
-    spans from different detectors are resolved by preferring the longer span.
-
-    `telemetry` is an optional observer that sees the raw ML output and the
-    user's configured regex output. Scope it to one API request by wrapping
-    the caller's work in `with masker.request_scope():`; otherwise each
-    `mask()` call emits its own record. See `anon_proxy.telemetry`.
+    `extra_detectors` run as Pass 2 (their spans participate in resolution and
+    affect the masked output). `telemetry`'s baseline detector runs as Pass 3
+    (observer-only, never affects output).
     """
 
     def __init__(
@@ -52,11 +55,13 @@ class Masker:
         store: PIIStore | None = None,
         extra_detectors: list[Detector] | None = None,
         telemetry: TelemetrySink | None = None,
+        overlap_policy: OverlapPolicy | None = None,
     ) -> None:
         self._filter = filter or PrivacyFilter()
         self._store = store or PIIStore()
         self._extra: list[Detector] = list(extra_detectors or [])
         self._telemetry = telemetry
+        self._policy: OverlapPolicy = overlap_policy or GreedyLongerWins()
 
     @property
     def store(self) -> PIIStore:
@@ -67,27 +72,62 @@ class Masker:
         return self._telemetry
 
     def mask(self, text: str) -> str:
-        ml_entities: list[PIIEntity] = list(self._filter.detect(text))
-        extra_entities: list[PIIEntity] = []
-        for detector in self._extra:
-            extra_entities.extend(detector.detect(text))
+        ml_spans = self._detect_ml(text)
+        user_spans = self._detect_user(text)
+        result = self._resolve(ml_spans + user_spans)
         if self._telemetry is not None:
             sink = _current_batch.get() or self._telemetry
-            sink.observe(text, ml_entities, extra_entities)
-        entities = _resolve_overlaps(ml_entities + extra_entities)
-        # Replace right-to-left so earlier spans' offsets stay valid.
-        for e in sorted(entities, key=lambda x: x.start, reverse=True):
-            token = self._store.get_or_create(e.label, e.text).token
-            text = text[: e.start] + token + text[e.end :]
+            self._observe(sink, text, ml_spans, user_spans, result)
+        return self._replace(text, result.kept)
+
+    def _detect_ml(self, text: str) -> list[AttributedSpan]:
+        return [AttributedSpan(entity=e, source="ml") for e in self._filter.detect(text)]
+
+    def _detect_user(self, text: str) -> list[AttributedSpan]:
+        out: list[AttributedSpan] = []
+        for d in self._extra:
+            out.extend(AttributedSpan(entity=e, source="user_regex") for e in d.detect(text))
+        return out
+
+    def _resolve(self, spans: list[AttributedSpan]) -> ResolveResult:
+        return self._policy.resolve(spans)
+
+    def _replace(self, text: str, kept: list[AttributedSpan]) -> str:
+        # Right-to-left so earlier offsets stay valid.
+        for s in sorted(kept, key=lambda x: x.start, reverse=True):
+            token = self._store.get_or_create(s.label, s.entity.text).token
+            text = text[: s.start] + token + text[s.end :]
         return text
+
+    def _observe(
+        self,
+        sink,
+        text: str,
+        ml_spans: list[AttributedSpan],
+        user_spans: list[AttributedSpan],
+        result: ResolveResult,
+    ) -> None:
+        # Backwards-compatible: call observe(text, ml_entities, extra_entities)
+        # if sink doesn't support the v2 attributed signature.
+        observe_v2 = getattr(sink, "observe_v2", None)
+        if callable(observe_v2):
+            observe_v2(
+                text=text,
+                ml_spans=ml_spans,
+                user_spans=user_spans,
+                kept=result.kept,
+                events=result.events,
+            )
+            return
+        sink.observe(
+            text,
+            [s.entity for s in ml_spans],
+            [s.entity for s in user_spans],
+        )
 
     @contextmanager
     def request_scope(self) -> Iterator[None]:
-        """Aggregate all mask() calls inside this scope into one telemetry record.
-
-        No-op when telemetry is disabled. Safe across async boundaries —
-        each async task sees its own current batch via ContextVar.
-        """
+        """Aggregate all mask() calls inside this scope into one telemetry record."""
         if self._telemetry is None:
             yield
             return
@@ -105,13 +145,7 @@ class Masker:
         return self._sub(text, lambda s: s)
 
     def unmask_json(self, text: str) -> str:
-        """Unmask tokens sitting inside a JSON string context.
-
-        Replacements are JSON-escaped so an original containing `"`, `\\`, or
-        control chars doesn't break the surrounding JSON. Use this for raw
-        JSON fragments like Anthropic's `input_json_delta.partial_json` where
-        the unmasked text flows through an unparsed string.
-        """
+        """Unmask tokens inside a JSON string context (escapes the unmasked value)."""
         return self._sub(text, lambda s: json.dumps(s)[1:-1])
 
     def _sub(self, text: str, transform: Callable[[str], str]) -> str:
@@ -128,30 +162,3 @@ class Masker:
             return transform(original) if original is not None else m.group(0)
 
         return pattern.sub(repl, text)
-
-
-def _resolve_overlaps(entities: list[PIIEntity]) -> list[PIIEntity]:
-    """Keep a non-overlapping subset of spans.
-
-    Greedy: sort by (start, -length, -score) so earlier and longer spans land first.
-    Walk left-to-right; when a span overlaps the last kept, replace only if the
-    new one is strictly longer (ties: higher score wins). Touching spans at
-    `prev.end == next.start` do not overlap.
-    """
-    if not entities:
-        return entities
-    ordered = sorted(
-        entities,
-        key=lambda e: (e.start, -(e.end - e.start), -e.score, e.label),
-    )
-    kept: list[PIIEntity] = []
-    for e in ordered:
-        if kept and e.start < kept[-1].end:
-            prev = kept[-1]
-            prev_len = prev.end - prev.start
-            cur_len = e.end - e.start
-            if cur_len > prev_len or (cur_len == prev_len and e.score > prev.score):
-                kept[-1] = e
-            continue
-        kept.append(e)
-    return kept
