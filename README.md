@@ -43,10 +43,12 @@ claude[1]> Sure <PERSON_1>, here's the summary of the note from <EMAIL_1>: ...
 
 - Python ≥ 3.10 (use [uv](https://docs.astral.sh/uv/))
 - CUDA GPU recommended (≥4 GB VRAM); CPU works but is slower
+- Apple Silicon (M1/M2/M3/M4) supported via MPS or MLX backends
 - `ANTHROPIC_API_KEY` for `test_mask.py`; the proxy itself forwards client auth — no key needed on the server
 
 ```bash
-uv sync        # install all dependencies
+uv sync        # install dependencies
+uv sync --extra mlx  # optional: Apple Silicon MLX support
 ```
 
 **Dependencies:** `torch`, `transformers` (local PII model), `starlette` + `uvicorn` (proxy server), `httpx` (upstream client), `anthropic` + `prompt-toolkit` (demo scripts).
@@ -64,12 +66,13 @@ uv run python -m anon_proxy.server [options]
 | `--host` | `127.0.0.1` | Bind address (`0.0.0.0` to expose on LAN) |
 | `--port` | `8080` | Listen port |
 | `--upstream` | `https://api.anthropic.com` | Upstream API |
+| `--backend` | `auto` | PII detection backend (`auto`, `cpu`, `mps`, `mlx`) |
 | `--debug` | off | Log new store entries and masked/unmasked diffs to stderr |
 | `--patterns <file>` | — | JSON file of extra regex detectors: `{"LABEL": "regex", ...}` |
 | `--merge-gap-file <file>` | — | JSON file overriding per-label adjacency merge chars (see `merge_gap.json.example`) |
 | `--chunk-size <N>` | `1500` | Max chars per model inference pass — lower values reduce peak VRAM |
 
-All flags have `ANON_PROXY_*` env-var equivalents (`ANON_PROXY_HOST`, `ANON_PROXY_PORT`, `ANON_PROXY_UPSTREAM`, `ANON_PROXY_DEBUG=1`, `ANON_PROXY_PATTERNS`, `ANON_PROXY_MERGE_GAP`, `ANON_PROXY_CHUNK_SIZE`).
+All flags have `ANON_PROXY_*` env-var equivalents (`ANON_PROXY_HOST`, `ANON_PROXY_PORT`, `ANON_PROXY_UPSTREAM`, `ANON_PROXY_BACKEND`, `ANON_PROXY_DEBUG=1`, `ANON_PROXY_PATTERNS`, `ANON_PROXY_MERGE_GAP`, `ANON_PROXY_CHUNK_SIZE`).
 
 **With all config files:**
 ```bash
@@ -127,9 +130,8 @@ Copy from the `.example` files to get started.
 
 ## Next steps / roadmap
 
-- **OpenAI-compatible adapter** — swap the Anthropic-specific SSE parser for an OpenAI adapter so any OpenAI SDK client works out of the box (ChatGPT, LangChain, etc.)
-- **Apple Silicon support** - enable running server with OpenAI privacy filter inference on Apple silicon, gives better support for self-hosting OpenClaw etc.
-- **Third-party chat clients** — route traffic from clients like Open WebUI or anything that targets an OpenAI endpoint through the proxy (needs the OpenAI adapter above)
-- **OpenRouter / multi-provider** — set `--upstream https://openrouter.ai/api` and add the OpenRouter auth header to cover non-Anthropic models
-- **Persistent store** — optionally write the token↔original dictionary to disk so placeholder mappings survive server restarts and span multiple sessions
-- **Streaming tool-result unmask** — the current streaming path unmasks `text_delta` and `input_json_delta`; tool results only appear in non-streaming responses today
+- **Usability** : Add OpenAI API adapter for broader client compatibility, then expand to other providers.
+- **Quality assurance** : Enhance PII detection quality tracking and add comprehensive unit/integration tests with benchmarking.
+- **Observability** : Implement structured logging and telemetry for monitoring proxy performance and PII masking metrics.
+- **Persistence** : Optionally persist PII mappings to disk so placeholder consistency survives server restarts.
+- **Dev infrastructure** : Set up CI, contribution guidelines, and project templates to streamline community development.
