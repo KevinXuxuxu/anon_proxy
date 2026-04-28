@@ -37,16 +37,18 @@ _current_batch: ContextVar[object | None] = ContextVar(
 
 
 class Masker:
-    """Five-stage pipeline: detect_ml → detect_user → (detect_baseline, observer) → resolve → replace.
+    """Masker runs the user-output pipeline: detect_ml → detect_user → resolve → replace.
 
-    Stages are named methods (`_detect_ml`, `_detect_user`, `_detect_baseline`,
-    `_resolve`, `_replace`) so each one has a single responsibility and can be
-    tested or swapped in isolation. See docs/.../pii-pipeline-clarity-...md
-    for the architecture diagram.
+    Stages are named methods (`_detect_ml`, `_detect_user`, `_resolve`,
+    `_replace`) so each one has a single responsibility and can be tested or
+    swapped in isolation. `_observe` is a thin dispatch into the optional
+    telemetry sink and never touches the masked output.
 
-    `extra_detectors` run as Pass 2 (their spans participate in resolution and
-    affect the masked output). `telemetry`'s baseline detector runs as Pass 3
-    (observer-only, never affects output).
+    `extra_detectors` run as Pass 2 of the architecture diagram (their spans
+    participate in resolution and affect masked output). The baseline regex
+    set referenced as Pass 3 lives in the telemetry observer
+    (`anon_proxy.telemetry.TelemetryObserver`) — observer-only, never affects
+    Masker output.
     """
 
     def __init__(
