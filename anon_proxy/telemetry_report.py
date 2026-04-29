@@ -108,6 +108,29 @@ def _render(records: list[dict], path: Path) -> None:
             print(f"  {label:22s}  {count:>6,}")
     print()
 
+    # --- Latency (v2 records with record_latency) ---
+    phases = ("mask", "upstream", "unmask", "total")
+    samples: dict[str, list[int]] = {p: [] for p in phases}
+    for r in records:
+        lat = r.get("latency_ms")
+        if not isinstance(lat, dict):
+            continue
+        for p in phases:
+            v = lat.get(p)
+            if isinstance(v, int):
+                samples[p].append(v)
+    if any(samples[p] for p in phases):
+        print("Latency (ms, sorted):")
+        for p in phases:
+            xs = sorted(samples[p])
+            if not xs:
+                continue
+            n = len(xs)
+            p50 = xs[n // 2]
+            p95 = xs[max(0, int(n * 0.95) - 1)] if n >= 20 else xs[-1]
+            print(f"  {p:>10s}  p50={p50:>6,}  p95={p95:>6,}  (n={n:,})")
+        print()
+
     if miss_total == 0:
         print("Regex baseline caught nothing that the configured detectors missed.")
         return
