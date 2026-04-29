@@ -1,9 +1,9 @@
-"""Chat with Claude through the PII mask/unmask layer.
+"""Chat with LLMs through the PII mask/unmask layer.
 
-Requires ANTHROPIC_API_KEY in the environment. Each turn:
+Requires an API key in the environment (provider-specific). Each turn:
   1. Your message is masked (PII -> placeholder tokens) before being sent.
-  2. The full conversation history sent to Claude stays masked throughout.
-  3. Claude's streamed reply is printed live (masked, dim), then the
+  2. The full conversation history sent to the API stays masked throughout.
+  3. The API's streamed reply is printed live (masked, dim), then the
      rendered version with placeholders substituted back to originals.
 
 Input is multi-line: plain Enter inserts a newline, Alt+Enter submits.
@@ -11,14 +11,18 @@ Ctrl-D exits. See _make_prompt_session() for how to remap VS Code's
 Shift+Enter onto Alt+Enter so it also submits.
 
 With --no-mask, the local masker is skipped entirely — useful for pointing
-this script at anon-proxy (ANTHROPIC_BASE_URL=http://127.0.0.1:8080) to
-exercise the server-side masking instead.
+this script at anon-proxy to exercise the server-side masking instead.
 
 Usage:
+  # Anthropic (default)
   uv run python test_mask.py
   uv run python test_mask.py --show-store
   uv run python test_mask.py --model claude-sonnet-4-6
-  ANTHROPIC_BASE_URL=http://127.0.0.1:8080 uv run python test_mask.py --no-mask
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8080/anthropic uv run python test_mask.py --no-mask
+
+  # OpenAI
+  uv run python test_mask.py --provider openai
+  OPENAI_BASE_URL=http://127.0.0.1:8080/openai uv run python test_mask.py --provider openai --no-mask
 """
 
 from __future__ import annotations
@@ -28,10 +32,26 @@ import os
 import sys
 
 import anthropic
+from openai import OpenAI
 from prompt_toolkit import ANSI, PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 
 from anon_proxy import Masker, PrivacyFilter, RegexDetector, load_merge_gap, load_patterns
+
+
+# Provider configurations
+PROVIDERS = {
+    "anthropic": {
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "base_url_env": "ANTHROPIC_BASE_URL",
+        "default_model": "claude-opus-4-7",
+    },
+    "openai": {
+        "api_key_env": "OPENAI_API_KEY",
+        "base_url_env": "OPENAI_BASE_URL",
+        "default_model": "gpt-4o",
+    },
+}
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant. The user's messages may contain placeholder "
@@ -84,9 +104,15 @@ def _make_prompt_session() -> PromptSession:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
+        "--provider",
+        choices=list(PROVIDERS.keys()),
+        default="anthropic",
+        help="API provider to use (default: anthropic).",
+    )
+    parser.add_argument(
         "--model",
-        default="claude-opus-4-7",
-        help="Claude model ID (default: claude-opus-4-7).",
+        default=None,
+        help="Model ID (default varies by provider).",
     )
     parser.add_argument(
         "--max-tokens",
@@ -103,7 +129,7 @@ def main() -> int:
         "--no-mask",
         action="store_true",
         help="Skip local masking/unmasking; send raw text and display raw replies. "
-             "Pair with ANTHROPIC_BASE_URL to test the proxy's own masking.",
+             "Pair with *_BASE_URL to test the proxy's own masking.",
     )
     parser.add_argument(
         "--patterns",
@@ -125,11 +151,18 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    provider_config = PROVIDERS[args.provider]
+    api_key_env = provider_config["api_key_env"]
+    base_url_env = provider_config["base_url_env"]
+    default_model = provider_config["default_model"]
+
+    model = args.model or default_model
+
+    if not os.environ.get(api_key_env):
         print(
-            f"{RED}error:{RESET} ANTHROPIC_API_KEY is not set.\n"
+            f"{RED}error:{RESET} {api_key_env} is not set.\n"
             "Export your key and try again:\n"
-            "  export ANTHROPIC_API_KEY=sk-ant-...",
+            f"  export {api_key_env}=...",
             file=sys.stderr,
         )
         return 2
@@ -158,9 +191,17 @@ def main() -> int:
                     return 2
             pf = PrivacyFilter(merge_gap_allowed=merge_gap, chunk_size=args.chunk_size)
         masker = Masker(filter=pf, extra_detectors=extra_detectors)
-    client = anthropic.Anthropic()
-    base_url = os.environ.get("ANTHROPIC_BASE_URL")
-    status_bits = [f"model={args.model}"]
+
+    # Create client based on provider
+    base_url = os.environ.get(base_url_env)
+    if args.provider == "anthropic":
+        client = anthropic.Anthropic(base_url=base_url)
+    elif args.provider == "openai":
+        client = OpenAI(base_url=base_url)
+    else:
+        return 1
+
+    status_bits = [f"provider={args.provider}", f"model={model}"]
     status_bits.append("masking=off" if args.no_mask else "masking=local")
     if base_url:
         status_bits.append(f"base_url={base_url}")
@@ -195,47 +236,89 @@ def main() -> int:
         history.append({"role": "user", "content": sent_text})
 
         try:
-            with client.messages.stream(
-                model=args.model,
-                max_tokens=args.max_tokens,
-                system=SYSTEM_PROMPT,
-                messages=history,
-                cache_control={"type": "ephemeral"},
-            ) as stream:
-                print(f"{CYAN}claude[{turn}]>{RESET} {DIM}", end="", flush=True)
-                for chunk in stream.text_stream:
-                    print(chunk, end="", flush=True)
-                print(RESET)
-                final = stream.get_final_message()
+            if args.provider == "anthropic":
+                assistant_text, final = await_anthropic_stream(
+                    client, model, args.max_tokens, history
+                )
+                history.append({"role": "assistant", "content": final.content})
+                usage = final.usage
+                cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+                cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+                usage_str = (
+                    f"  {DIM}usage: in={usage.input_tokens} out={usage.output_tokens}"
+                    f" cache_read={cache_read} cache_write={cache_write}{RESET}"
+                )
+            else:  # openai
+                assistant_text, usage = await_openai_stream(
+                    client, model, args.max_tokens, history
+                )
+                history.append({"role": "assistant", "content": assistant_text})
+                if usage:
+                    usage_str = (
+                        f"  {DIM}usage: in={usage.prompt_tokens} out={usage.completion_tokens}{RESET}"
+                    )
+                else:
+                    usage_str = f"  {DIM}(usage unavailable){RESET}"
         except KeyboardInterrupt:
             print(f"\n  {YELLOW}interrupted{RESET}\n")
             history.pop()
             continue
-        except anthropic.APIError as e:
+        except (anthropic.APIError, Exception) as e:
             history.pop()
             print(f"  {RED}API error:{RESET} {e}\n")
             continue
-
-        assistant_text = "".join(b.text for b in final.content if b.type == "text")
-        history.append({"role": "assistant", "content": final.content})
 
         rendered = do_unmask(assistant_text)
         if rendered != assistant_text:
             print(f"  {DIM}rendered ->{RESET} {rendered}")
 
-        usage = final.usage
-        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-        cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
-        print(
-            f"  {DIM}usage: in={usage.input_tokens} out={usage.output_tokens}"
-            f" cache_read={cache_read} cache_write={cache_write}{RESET}"
-        )
+        print(usage_str)
 
         if args.show_store and masker is not None:
             dump_store(masker)
 
         print()
         turn += 1
+
+
+def await_anthropic_stream(client, model: str, max_tokens: int, history: list[dict]) -> tuple[str, any]:
+    """Stream Anthropic API response."""
+    with client.messages.stream(
+        model=model,
+        max_tokens=max_tokens,
+        system=SYSTEM_PROMPT,
+        messages=history,
+        cache_control={"type": "ephemeral"},
+    ) as stream:
+        print(f"{CYAN}claude>{RESET} {DIM}", end="", flush=True)
+        for chunk in stream.text_stream:
+            print(chunk, end="", flush=True)
+        print(RESET)
+        final = stream.get_final_message()
+    return "".join(b.text for b in final.content if b.type == "text"), final
+
+
+def await_openai_stream(client, model: str, max_tokens: int, history: list[dict]) -> tuple[str, any]:
+    """Stream OpenAI API response."""
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history]
+    stream = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=messages,
+        stream=True,
+    )
+    print(f"{CYAN}chatgpt>{RESET} {DIM}", end="", flush=True)
+    assistant_text = ""
+    usage = None
+    for chunk in stream:
+        if chunk.usage:
+            usage = chunk.usage
+        delta = chunk.choices[0].delta
+        if delta.content:
+            print(delta.content, end="", flush=True)
+            assistant_text += delta.content
+    print(RESET)
+    return assistant_text, usage
 
 
 if __name__ == "__main__":

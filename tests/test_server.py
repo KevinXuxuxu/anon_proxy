@@ -22,6 +22,7 @@ from anon_proxy.mapping import PIIStore
 from anon_proxy.masker import Masker
 from anon_proxy.server import build_app
 from anon_proxy.telemetry import JSONLWriter, TelemetryObserver, default_detector
+from anon_proxy.upstream import UpstreamConfig
 
 
 class _DummyFilter:
@@ -42,15 +43,21 @@ def _make_proxy(tmp_path: Path, stub_routes: list[Route]) -> tuple[Starlette, Pa
     upstream = Starlette(routes=stub_routes)
     transport = httpx.ASGITransport(app=upstream)
 
-    app = build_app(masker=masker, upstream="http://stub", debug=False)
+    # Override the built-in `anthropic` provider to point at the in-memory stub.
+    extra_upstreams = {
+        "anthropic": UpstreamConfig(
+            name="anthropic", base_url="http://stub", adapter="anthropic", sse=True,
+        ),
+    }
+    app = build_app(masker=masker, extra_upstreams=extra_upstreams, debug=False)
 
     @asynccontextmanager
     async def lifespan_override(_):
         async with httpx.AsyncClient(transport=transport, base_url="http://stub") as c:
             app.state.client = c
             app.state.masker = masker
-            app.state.upstream = "http://stub"
             app.state.debug = False
+            app.state.upstreams = extra_upstreams
             yield
 
     app.router.lifespan_context = lifespan_override
@@ -73,7 +80,7 @@ def test_non_streaming_records_latency(tmp_path: Path):
 
     with TestClient(app) as client:
         resp = client.post(
-            "/v1/messages",
+            "/anthropic/v1/messages",
             json={"model": "claude-x", "messages": [{"role": "user", "content": "hi"}]},
         )
 
@@ -108,7 +115,7 @@ def test_streaming_records_latency(tmp_path: Path):
     with TestClient(app) as client:
         with client.stream(
             "POST",
-            "/v1/messages",
+            "/anthropic/v1/messages",
             json={
                 "model": "claude-x",
                 "stream": True,
