@@ -225,6 +225,29 @@ Interpretation:
 - **Many "same-label nearby" misses** → the model fragmented a span and merge-gap didn't stitch it; adjust `--merge-gap-file`.
 - **Many "near real chunk boundary" misses** → chunk boundaries are stripping context; raise `--chunk-size`.
 
+### Latency (`latency_ms` field)
+
+When the proxy serves a request, each v2 record also carries:
+
+```json
+"latency_ms": {"mask": 3, "upstream": 412, "unmask": 2, "total": 420}
+```
+
+- `mask` — milliseconds spent in `Masker.mask` for the request (Pass 1–4 of the
+  pipeline plus token replacement).
+- `upstream` — time from request-sent to upstream-response-complete. For
+  streaming responses this includes the full stream duration.
+- `unmask` — time spent unmasking. Non-streaming: a single pass. Streaming:
+  cumulative across all chunks (microseconds summed inside `transform_stream`,
+  truncated to ms on commit).
+- `total` — end-to-end proxy latency (request received → response complete).
+
+For streaming requests `mask + upstream + unmask` will not equal `total`
+because mask runs before upstream and unmask is interleaved with upstream.
+
+`python -m anon_proxy.telemetry_report` prints per-phase p50/p95 across all
+logged requests.
+
 If you want stricter regex coverage (e.g. international phone formats), pass your own via `--patterns` — user regexes count as "caught" in telemetry, so the log shows you what's *still* leaking after every configured layer runs.
 
 ## Next steps / roadmap
