@@ -61,6 +61,25 @@ def canonical_label(label: str) -> str:
     return CANONICAL_MAP.get(label, label)
 
 
+def _dedupe_canonical(spans: list[Span]) -> list[Span]:
+    """Drop spans that share a canonical key with an earlier span.
+
+    Both bundled corpora carry per-span duplicates that canonicalize to the
+    same label (synthetic emits both `private_email` and `EMAIL`; the default
+    baseline regex emits both `PHONE_NANP` and `PHONE_LOOSE`). Counting them
+    separately makes precision and recall wrong out of the box.
+    """
+    seen: set[tuple[str, int, int]] = set()
+    out: list[Span] = []
+    for s in spans:
+        key = (canonical_label(s.label), s.start, s.end)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
 @dataclass(frozen=True)
 class Span:
     label: str
@@ -93,10 +112,12 @@ def compute_metrics(examples: list[LabeledExample]) -> dict[str, dict[str, float
     n: dict[str, int] = defaultdict(int)
 
     for ex in examples:
-        truth_remaining = list(ex.truth)
-        for t in ex.truth:
+        ex_truth = _dedupe_canonical(ex.truth)
+        ex_predictions = _dedupe_canonical(ex.predictions)
+        truth_remaining = list(ex_truth)
+        for t in ex_truth:
             n[canonical_label(t.label)] += 1
-        for p in ex.predictions:
+        for p in ex_predictions:
             label_key = canonical_label(p.label)
             matched = next(
                 (t for t in truth_remaining if span_match(p, t)),

@@ -95,3 +95,44 @@ def test_compute_metrics_canonicalizes_truth_and_pred():
     m = compute_metrics(examples)
     assert m["EMAIL"]["precision"] == 1.0
     assert m["EMAIL"]["recall"] == 1.0
+
+
+def test_compute_metrics_dedups_canonical_duplicates():
+    """Truth and predictions with multiple labels for the same span must not be double-counted."""
+    examples = [
+        LabeledExample(
+            text="hello",
+            truth=[
+                Span(label="private_email", start=0, end=5),
+                Span(label="EMAIL",         start=0, end=5),  # canonical-duplicate of above
+            ],
+            predictions=[
+                Span(label="private_email", start=0, end=5),
+                Span(label="EMAIL",         start=0, end=5),  # canonical-duplicate
+            ],
+        )
+    ]
+    m = compute_metrics(examples)
+    # One real email → n=1, TP=1, no FP/FN. Without dedup we'd see n=2, TP=1, FN=1.
+    assert m["EMAIL"]["n"] == 1
+    assert m["EMAIL"]["precision"] == 1.0
+    assert m["EMAIL"]["recall"] == 1.0
+    assert m["EMAIL"]["f1"] == 1.0
+
+
+def test_compute_metrics_dedups_within_predictions():
+    """Two predictions with different labels but identical canonical span must count once."""
+    examples = [
+        LabeledExample(
+            text="phone",
+            truth=[Span(label="PHONE", start=0, end=5)],
+            predictions=[
+                Span(label="PHONE_NANP",  start=0, end=5),   # canonicalizes to PHONE
+                Span(label="PHONE_LOOSE", start=0, end=5),   # canonicalizes to PHONE
+            ],
+        )
+    ]
+    m = compute_metrics(examples)
+    # Without dedup: TP=1, FP=1 (precision 0.5). With dedup: TP=1, FP=0.
+    assert m["PHONE"]["precision"] == 1.0
+    assert m["PHONE"]["recall"] == 1.0
