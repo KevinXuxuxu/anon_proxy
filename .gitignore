@@ -11,3 +11,10 @@ wheels/
 
 fzxu_git.sh
 *.json
+
+# Personal process artifacts (design specs + implementation plans)
+# These are working notes for the maintainer, not public docs.
+docs/superpowers/
+
+# Local worktrees
+.worktrees/
