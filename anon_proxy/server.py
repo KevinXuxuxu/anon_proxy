@@ -376,7 +376,7 @@ async def _handle_non_streaming(
     upstream_ms = int((time.perf_counter() - t_upstream) * 1000)
     content_type = upstream_resp.headers.get("content-type", "")
 
-    response, unmask_ms = _build_unmasked_response(upstream_resp, content_type, masker, adapter, debug)
+    response, unmask_ms = _build_unmasked_response(upstream_resp, content_type, masker, adapter, debug, batch=batch)
 
     if batch is not None:
         batch.record_latency(
@@ -394,6 +394,8 @@ def _build_unmasked_response(
     masker: Masker,
     adapter,
     debug: bool,
+    *,
+    batch=None,
 ) -> tuple[Response, int]:
     """Return (Response, unmask_ms). unmask_ms=0 when no unmask phase ran (non-JSON or 4xx/5xx)."""
     if content_type.startswith("application/json"):
@@ -403,7 +405,7 @@ def _build_unmasked_response(
             resp_json = None
         if resp_json is not None and upstream_resp.status_code < 400:
             t_unmask = time.perf_counter()
-            unmasked = adapter.unmask_response(resp_json, masker)
+            unmasked = adapter.unmask_response(resp_json, masker, telemetry_batch=batch)
             unmask_ms = int((time.perf_counter() - t_unmask) * 1000)
             if debug:
                 _log_response(resp_json, unmasked)
