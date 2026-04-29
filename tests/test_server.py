@@ -208,3 +208,16 @@ def test_telemetry_path_warns_when_under_sync_root(monkeypatch, tmp_path, capsys
     err = capsys.readouterr().err
     assert "Dropbox" in err
     assert "encrypted" in err.lower()
+
+
+def test_build_telemetry_observer_uses_raw_writer(tmp_path, fake_keyring, monkeypatch):
+    from anon_proxy.crypto import generate_key, store_key
+    from anon_proxy.retention import RawWriter
+    monkeypatch.delenv("ANON_PROXY_TELEMETRY_KEY", raising=False)
+    store_key(generate_key())
+    obs = build_telemetry_observer(
+        store_pii=True, corpus=False, include_responses=False,
+        raw_path=tmp_path / "telemetry-raw.jsonl",
+    )
+    # The sink is a bound method of RawWriter.write
+    assert isinstance(obs._sink.__self__, RawWriter)

@@ -606,6 +606,8 @@ def build_telemetry_observer(
     raw_path: Path,
     detector_patterns_path: Path | None = None,
     chunker=None,
+    ttl_days: int = 30,
+    size_mb: int = 50,
 ) -> TelemetryObserver:
     """Construct a TelemetryObserver for the requested capture mode.
 
@@ -613,10 +615,16 @@ def build_telemetry_observer(
     flag implies the earlier ones). Returns a TelemetryObserver wired with
     the right writer, detector, and (when storing PII) the keyring key.
 
+    When store_pii is True, uses RawWriter (with TTL + size auto-purge) backed
+    by MetricsWriter so trend data survives purge. ZERO_PII mode uses the
+    simpler JSONLWriter (no encryption key, no retention config).
+
     Raises SystemExit(2) if the user requested a PII-storing mode but no
     encryption key is available. Refuse-to-start by design — we never
     persist PII in cleartext.
     """
+    from anon_proxy.retention import MetricsWriter, RawWriter, RetentionConfig
+
     if include_responses:
         mode = CaptureMode.CORPUS_WITH_RESPONSES
     elif corpus:
@@ -654,7 +662,18 @@ def build_telemetry_observer(
                     file=sys.stderr,
                 )
 
-    sink = JSONLWriter(raw_path)
+    if mode != CaptureMode.ZERO_PII:
+        cfg = RetentionConfig(
+            raw_dir=raw_path.parent,
+            ttl_days=ttl_days,
+            raw_size_mb=size_mb,
+        )
+        metrics = MetricsWriter(raw_path.parent)
+        raw_writer = RawWriter(cfg, metrics_writer=metrics)
+        sink = raw_writer.write
+    else:
+        sink = JSONLWriter(raw_path)
+
     detector = (
         default_telemetry_detector()
         if detector_patterns_path is None
@@ -666,6 +685,25 @@ def build_telemetry_observer(
         chunker=chunker,
         capture_mode=mode,
         encryption_key=key,
+    )
+
+
+def _telemetry_health_line(raw_writer, metrics_writer) -> str:
+    raw_path = raw_writer.path
+    raw_lines = [l for l in raw_path.read_text().splitlines() if l.strip()] if raw_path.exists() else []
+    raw_size_mb = (raw_path.stat().st_size if raw_path.exists() else 0) / (1024 * 1024)
+    oldest = "—"
+    if raw_lines:
+        try:
+            oldest = json.loads(raw_lines[0])["ts"][:10]
+        except Exception:
+            oldest = "?"
+    corpus_path = raw_writer._cfg.corpus_path
+    corpus_lines = [l for l in corpus_path.read_text().splitlines() if l.strip()] if corpus_path.exists() else []
+    corpus_size_kb = (corpus_path.stat().st_size if corpus_path.exists() else 0) / 1024
+    return (
+        f"anon-proxy telemetry: {len(raw_lines)} raw records ({raw_size_mb:.1f} MB), "
+        f"oldest {oldest}. Corpus: {len(corpus_lines)} records ({corpus_size_kb:.0f} KB)."
     )
 
 
@@ -756,6 +794,18 @@ def main() -> None:
         action="store_true",
         help="Generate a fresh telemetry encryption key in the OS keyring and exit.",
     )
+    parser.add_argument(
+        "--telemetry-raw-ttl-days",
+        type=int,
+        default=int(os.environ.get("ANON_PROXY_TELEMETRY_RAW_TTL_DAYS", "30")),
+        help="Auto-purge raw records older than N days (default: 30).",
+    )
+    parser.add_argument(
+        "--telemetry-raw-size-mb",
+        type=int,
+        default=int(os.environ.get("ANON_PROXY_TELEMETRY_RAW_SIZE_MB", "50")),
+        help="Auto-purge raw records when file exceeds N MB (default: 50).",
+    )
     args = parser.parse_args()
 
     if args.telemetry_init_key:
@@ -809,7 +859,14 @@ def main() -> None:
             raw_path=log_path,
             detector_patterns_path=Path(args.patterns) if args.patterns else None,
             chunker=(pf.chunk_ranges if pf is not None else None),
+            ttl_days=args.telemetry_raw_ttl_days,
+            size_mb=args.telemetry_raw_size_mb,
         )
+        # Emit health line when using RawWriter (PII-storing modes)
+        from anon_proxy.retention import RawWriter
+        sink = telemetry_observer._sink
+        if callable(sink) and hasattr(sink, "__self__") and isinstance(sink.__self__, RawWriter):
+            print(_telemetry_health_line(sink.__self__, sink.__self__._metrics_writer), file=sys.stderr)
 
     masker = (
         Masker(filter=pf, extra_detectors=extra_detectors, telemetry=telemetry_observer)
