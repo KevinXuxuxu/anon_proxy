@@ -708,6 +708,12 @@ def _telemetry_health_line(raw_writer, metrics_writer) -> str:
 
 
 def main() -> None:
+    # Intercept `anon-proxy telemetry <subcmd>` before the proxy's own argparse.
+    if len(sys.argv) >= 2 and sys.argv[1] == "telemetry":
+        from anon_proxy.triage_cli import main as triage_main
+        triage_main(sys.argv[2:])
+        return
+
     import argparse
     import uvicorn
 
