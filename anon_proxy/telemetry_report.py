@@ -14,8 +14,10 @@ import argparse
 import json
 import sys
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from anon_proxy.storage_paths import default_data_dir
 from anon_proxy.telemetry import DEFAULT_PATH
 
 
@@ -58,6 +60,149 @@ def _canonical(label: str) -> str:
     return _CANONICAL_LABEL.get(label, label)
 
 
+# ============================================================================
+# PUBLIC REPORT API (Phase 9)
+# render_report() is the new entrypoint for the three-file telemetry layout:
+#   telemetry-raw.jsonl   — per-request span records (schema v3)
+#   metrics.jsonl         — daily rollup (zero-PII, no decryption needed)
+#   corpus.jsonl          — triage-reviewed samples
+#
+# Default mode works entirely without keychain access — labels/counts stay
+# cleartext. Only --with-text resolves the encryption key.
+# ============================================================================
+
+
+def render_report(data_dir: Path, *, with_text: bool = False) -> None:
+    """Render a summary from a directory containing the three JSONL telemetry files.
+
+    Default mode requires NO keychain access. ``with_text=True`` resolves the
+    AES key from the OS keyring and decrypts entity text inline (emits a notice
+    to stderr so the user knows decrypted data is on screen).
+    """
+    raw_path = data_dir / "telemetry-raw.jsonl"
+    metrics_path = data_dir / "metrics.jsonl"
+    corpus_path = data_dir / "corpus.jsonl"
+
+    raw_records = _read_jsonl(raw_path)
+    metrics_records = _read_jsonl(metrics_path)
+    corpus_records = _read_jsonl(corpus_path)
+
+    # Existing detector-gap analysis on raw records (labels/counts only)
+    if raw_records:
+        _render(raw_records, raw_path)
+        # v3 schema uses a unified "spans" list — print label summary if present
+        v3_labels: Counter[str] = Counter()
+        for rec in raw_records:
+            for span in rec.get("spans", []):
+                if "label" in span:
+                    v3_labels[span["label"]] += 1
+        if v3_labels:
+            print("v3 spans (all sides):")
+            for label, count in v3_labels.most_common():
+                print(f"  {label:22s}  {count:>6,}")
+            print()
+    else:
+        print(f"{raw_path}: no raw records yet.\n")
+
+    print(_trend_panel(metrics_records))
+    print(_leak_back_alerts(raw_records))
+    print(_storage_health(raw_path, corpus_path, raw_records, corpus_records))
+
+    if with_text:
+        _print_with_text(raw_records)
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    """Read a JSONL file, skipping missing files and malformed lines."""
+    if not path.exists():
+        return []
+    lines = []
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            lines.append(json.loads(line))
+        except json.JSONDecodeError as e:
+            print(f"  skipping malformed line {i} in {path.name}: {e}", file=sys.stderr)
+    return lines
+
+
+def _trend_panel(metrics: list[dict]) -> str:
+    """Render the trend panel from metrics.jsonl records (last 14 days)."""
+    if not metrics:
+        return "== Trend ==\n(no metrics yet)\n"
+    lines = ["== Trend (recent) =="]
+    for m in metrics[-14:]:
+        label_counts = m.get("label_counts", {})
+        labels_str = ", ".join(f"{k}: {v}" for k, v in sorted(label_counts.items()))
+        lines.append(
+            f"  {m['date']}  records={m.get('total_records', 0)}"
+            f"  labels={{{labels_str}}}"
+            f"  leak_back={m.get('leak_back', 0)}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _leak_back_alerts(records: list[dict]) -> str:
+    """Count response-side spans in the last 7 days of raw records."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    leak_count = 0
+    for rec in records:
+        if rec.get("ts", "") < cutoff:
+            continue
+        for span in rec.get("spans", []):
+            if span.get("side") == "response":
+                leak_count += 1
+    if leak_count == 0:
+        return (
+            "== Leak-back alerts (last 7 days) ==\n"
+            "No response-side spans detected.\n"
+        )
+    return (
+        f"== Leak-back alerts (last 7 days) ==\n"
+        f"{leak_count} response-side span(s) detected. "
+        f"Investigate: anon-proxy telemetry triage --source leak-back\n"
+    )
+
+
+def _storage_health(
+    raw_path: Path,
+    corpus_path: Path,
+    raw_records: list[dict],
+    corpus_records: list[dict],
+) -> str:
+    """Summarise file sizes, record counts, and oldest raw timestamp."""
+    raw_size_mb = (raw_path.stat().st_size if raw_path.exists() else 0) / (1024 * 1024)
+    corpus_size_kb = (corpus_path.stat().st_size if corpus_path.exists() else 0) / 1024
+    oldest = "—"
+    if raw_records:
+        try:
+            oldest = raw_records[0]["ts"][:10]
+        except (KeyError, IndexError):
+            oldest = "?"
+    return (
+        f"== Storage health ==\n"
+        f"Raw: {len(raw_records)} records ({raw_size_mb:.1f} MB), oldest {oldest}\n"
+        f"Corpus: {len(corpus_records)} records ({corpus_size_kb:.0f} KB)\n"
+    )
+
+
+def _print_with_text(records: list[dict]) -> None:
+    """Resolve keyring key and print decrypted entity text for each span."""
+    from anon_proxy.crypto import resolve_key, decrypt_field
+
+    key = resolve_key()
+    print("anon-proxy: key resolved from keyring; decrypted output follows.", file=sys.stderr)
+    print("== Decrypted entity text ==")
+    for rec in records:
+        for span in rec.get("spans", []):
+            if "enc_text" in span:
+                text = decrypt_field(span["enc_text"], key)
+            else:
+                text = "(no enc_text)"
+            print(f"  [{rec.get('ts', '?')}] {span.get('label', '?')}  text={text!r}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="anon-proxy telemetry report — analyze local mask logs for detector gaps",
@@ -66,10 +211,37 @@ def main() -> None:
         "--path",
         type=Path,
         default=DEFAULT_PATH,
-        help=f"Path to the telemetry JSONL log (default: {DEFAULT_PATH})",
+        help=f"Path to the telemetry JSONL log (legacy; default: {DEFAULT_PATH})",
+    )
+    parser.add_argument(
+        "--dir",
+        type=Path,
+        default=None,
+        help="Directory containing telemetry-raw.jsonl, metrics.jsonl, corpus.jsonl",
+    )
+    parser.add_argument(
+        "--with-text",
+        action="store_true",
+        help="Decrypt and show entity text (requires keyring access)",
     )
     args = parser.parse_args()
 
+    # New directory-based mode (Phase 9 layout)
+    if args.dir is not None:
+        data_dir: Path = args.dir
+        if not data_dir.is_dir():
+            print(f"No such directory: {data_dir}", file=sys.stderr)
+            sys.exit(1)
+        render_report(data_dir, with_text=args.with_text)
+        return
+
+    # Check if the default data dir has the new layout
+    default_dir = default_data_dir()
+    if (default_dir / "telemetry-raw.jsonl").exists() or (default_dir / "metrics.jsonl").exists():
+        render_report(default_dir, with_text=args.with_text)
+        return
+
+    # Legacy single-file mode (backward compat)
     path: Path = args.path
     if not path.exists():
         print(f"No telemetry log at {path}", file=sys.stderr)
