@@ -9,5 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
+# Git worktrees
+.worktrees/
+
 fzxu_git.sh
 *.json
