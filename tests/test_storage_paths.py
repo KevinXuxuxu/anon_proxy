@@ -45,3 +45,27 @@ def test_is_under_sync_root_clean(monkeypatch, tmp_path):
 def test_sync_roots_contains_known_services():
     names = {r.name for r in SYNC_ROOTS}
     assert {"Dropbox", "iCloud Drive", "OneDrive", "Sync"} <= names
+
+
+import stat
+from anon_proxy.storage_paths import secure_create_dir, exclude_from_time_machine
+
+
+def test_secure_create_dir_perms_0700(tmp_path):
+    target = tmp_path / "anon-proxy"
+    secure_create_dir(target)
+    assert target.is_dir()
+    mode = stat.S_IMODE(target.stat().st_mode)
+    assert mode == 0o700
+
+
+def test_secure_create_dir_idempotent(tmp_path):
+    target = tmp_path / "anon-proxy"
+    secure_create_dir(target)
+    secure_create_dir(target)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o700
+
+
+def test_exclude_from_time_machine_returns_false_on_linux(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert exclude_from_time_machine(tmp_path) is False
