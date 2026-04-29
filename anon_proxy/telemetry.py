@@ -27,6 +27,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from anon_proxy.pipeline import AttributedSpan, OverlapEvent
 from anon_proxy.privacy_filter import PIIEntity
 from anon_proxy.regex_detector import RegexDetector, load_patterns
 
@@ -86,17 +87,23 @@ class JSONLWriter:
 class TelemetryBatch:
     """Accumulates per-leaf observations across one API request.
 
-    A batch is opened by `Masker.request_scope()` at the start of
-    `anthropic_adapter.mask_request`, observes each `Masker.mask()` call
-    inside the scope, and commits one record when the scope exits.
+    v2 (preferred): callers invoke `observe_v2(text, ml_spans, user_spans, kept, events)`
+    with `AttributedSpan` instances. The committed record carries `spans[]`
+    with per-span attribution, `overlap_events[]`, and per-chunk counts.
 
-    Usable as a context manager; also commits on explicit `commit()`.
+    v1 (legacy): `observe(text, ml_entities, extra_entities)` still works for
+    callers that haven't been migrated; the v2 fields are derived as best as
+    possible (no overlap events available, kept inferred as union).
+
+    v1 record fields (`ml_spans`, `extra_spans`, `regex_missed`) remain
+    populated in v2 records so existing readers keep working.
     """
 
     __slots__ = (
         "_observer",
-        "_ml_spans",
-        "_extra_spans",
+        "_spans",
+        "_overlap_events",
+        "_chunks_meta",
         "_missed",
         "_req_chars",
         "_req_chunks",
@@ -105,8 +112,9 @@ class TelemetryBatch:
 
     def __init__(self, observer: "TelemetryObserver") -> None:
         self._observer = observer
-        self._ml_spans: list[dict] = []
-        self._extra_spans: list[dict] = []
+        self._spans: list[dict] = []
+        self._overlap_events: list[dict] = []
+        self._chunks_meta: list[dict] = []
         self._missed: list[dict] = []
         self._req_chars: int = 0
         self._req_chunks: int = 0
@@ -118,8 +126,23 @@ class TelemetryBatch:
         ml_entities: list[PIIEntity],
         extra_entities: list[PIIEntity],
     ) -> None:
+        """Legacy v1 signature — derives v2 attributes from raw entity lists."""
+        ml_spans = [AttributedSpan(entity=e, source="ml") for e in ml_entities]
+        user_spans = [AttributedSpan(entity=e, source="user_regex") for e in extra_entities]
+        kept = ml_spans + user_spans
+        self.observe_v2(text=text, ml_spans=ml_spans, user_spans=user_spans, kept=kept, events=[])
+
+    def observe_v2(
+        self,
+        *,
+        text: str,
+        ml_spans: list[AttributedSpan],
+        user_spans: list[AttributedSpan],
+        kept: list[AttributedSpan],
+        events: list[OverlapEvent],
+    ) -> None:
         try:
-            self._accumulate(text, ml_entities, extra_entities)
+            self._accumulate(text, ml_spans, user_spans, kept, events)
         except Exception as exc:
             print(
                 f"anon_proxy telemetry: {type(exc).__name__}: {exc}",
@@ -129,18 +152,47 @@ class TelemetryBatch:
     def _accumulate(
         self,
         text: str,
-        ml_entities: list[PIIEntity],
-        extra_entities: list[PIIEntity],
+        ml_spans: list[AttributedSpan],
+        user_spans: list[AttributedSpan],
+        kept: list[AttributedSpan],
+        events: list[OverlapEvent],
     ) -> None:
         chunk_offsets = self._observer.chunks(text)
-        detected = ml_entities + extra_entities
         baseline = _resolve_baseline_overlaps(self._observer.baseline(text))
-        for r in baseline:
-            if any(_overlaps(r, e) for e in detected):
+        baseline_spans = [AttributedSpan(entity=e, source="baseline") for e in baseline]
+
+        kept_ids = {id(s) for s in kept}
+        for s in ml_spans + user_spans:
+            self._spans.append(_span_record(s, kept=id(s) in kept_ids, events=events))
+        detected_entities = [s.entity for s in ml_spans + user_spans]
+        for bs in baseline_spans:
+            self._spans.append({
+                "label": bs.label,
+                "len": bs.length,
+                "source": "baseline",
+                "kept": False,
+                "lost_to": None,
+                "reason": "observer_only",
+            })
+            if any(_overlaps(bs.entity, e) for e in detected_entities):
                 continue
-            self._missed.append(_miss_record(r, detected, chunk_offsets))
-        self._ml_spans.extend(_span(e) for e in ml_entities)
-        self._extra_spans.extend(_span(e) for e in extra_entities)
+            self._missed.append(_miss_record(bs.entity, detected_entities, chunk_offsets))
+
+        for ev in events:
+            self._overlap_events.append({
+                "winner_source": ev.winner.source,
+                "loser_source": ev.loser.source,
+                "winner_label": ev.winner.label,
+                "loser_label": ev.loser.label,
+                "reason": ev.reason,
+            })
+
+        if chunk_offsets:
+            for off, end in chunk_offsets:
+                self._chunks_meta.append(_chunk_meta(off, end, ml_spans, user_spans, baseline_spans))
+        else:
+            self._chunks_meta.append(_chunk_meta(0, len(text), ml_spans, user_spans, baseline_spans))
+
         self._req_chars += len(text)
         self._req_chunks += len(chunk_offsets) if chunk_offsets else 1
 
@@ -148,15 +200,27 @@ class TelemetryBatch:
         if self._committed:
             return
         self._committed = True
-        if self._req_chars == 0 and not self._ml_spans and not self._missed:
+        if self._req_chars == 0 and not self._spans and not self._missed:
             return
         record = {
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "schema": 2,
             "req_chars": self._req_chars,
             "req_chunks": self._req_chunks,
-            "ml_spans": self._ml_spans,
-            "extra_spans": self._extra_spans,
+            "spans": self._spans,
+            "overlap_events": self._overlap_events,
+            "chunks": self._chunks_meta,
             "regex_missed": self._missed,
+            "ml_spans": [
+                {"label": s["label"], "len": s["len"]}
+                for s in self._spans
+                if s["source"] == "ml" and s["kept"]
+            ],
+            "extra_spans": [
+                {"label": s["label"], "len": s["len"]}
+                for s in self._spans
+                if s["source"] == "user_regex" and s["kept"]
+            ],
         }
         self._observer._write(record)
 
@@ -226,8 +290,42 @@ class TelemetryObserver:
 # ---------- helpers ----------
 
 
-def _span(e: PIIEntity) -> dict:
-    return {"label": e.label, "len": e.end - e.start}
+def _span_record(span: AttributedSpan, *, kept: bool, events: list[OverlapEvent]) -> dict:
+    """Build a v2 spans[] entry for an ml/user span (not baseline)."""
+    rec: dict = {
+        "label": span.label,
+        "len": span.length,
+        "source": span.source,
+        "kept": kept,
+        "score": round(span.entity.score, 4),
+    }
+    if kept:
+        rec["lost_to"] = None
+        rec["reason"] = "no_overlap"
+        return rec
+    for ev in events:
+        if ev.loser is span:
+            rec["lost_to"] = ev.winner.source
+            rec["reason"] = ev.reason
+            return rec
+    rec["lost_to"] = None
+    rec["reason"] = "no_overlap"
+    return rec
+
+
+def _chunk_meta(
+    offset: int,
+    end: int,
+    ml_spans: list[AttributedSpan],
+    user_spans: list[AttributedSpan],
+    baseline_spans: list[AttributedSpan],
+) -> dict:
+    return {
+        "chars": end - offset,
+        "ml_spans": sum(1 for s in ml_spans if offset <= s.start < end),
+        "user_spans": sum(1 for s in user_spans if offset <= s.start < end),
+        "baseline_spans": sum(1 for s in baseline_spans if offset <= s.start < end),
+    }
 
 
 def _overlaps(a: PIIEntity, b: PIIEntity) -> bool:

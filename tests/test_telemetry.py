@@ -24,6 +24,7 @@ from anon_proxy.telemetry import (
     _in_boundary_zone,
     _overlaps,
     _resolve_baseline_overlaps,
+    default_detector,
     load_default_patterns,
 )
 
@@ -402,3 +403,114 @@ def test_default_patterns_catch_common_shapes():
     for text, expected_label in cases.items():
         labels = {e.label for e in det.detect(text)}
         assert expected_label in labels, f"expected {expected_label} in {labels} for: {text!r}"
+
+
+from anon_proxy.pipeline import AttributedSpan, OverlapEvent
+
+
+def _aspan(label: str, start: int, end: int, source: str, score: float = 1.0) -> AttributedSpan:
+    return AttributedSpan(
+        entity=PIIEntity(label=label, text="x" * (end - start), start=start, end=end, score=score),
+        source=source,
+    )
+
+
+def test_v2_record_has_schema_field(tmp_path: Path):
+    log = tmp_path / "tel.jsonl"
+    obs = TelemetryObserver(default_detector(), JSONLWriter(log))
+    batch = obs.new_batch()
+    batch.observe_v2(
+        text="hello",
+        ml_spans=[_aspan("private_email", 0, 5, "ml")],
+        user_spans=[],
+        kept=[_aspan("private_email", 0, 5, "ml")],
+        events=[],
+    )
+    batch.commit()
+    rec = json.loads(log.read_text().strip())
+    assert rec["schema"] == 2
+    assert "spans" in rec
+    assert "overlap_events" in rec
+    assert "chunks" in rec
+
+
+def test_v2_record_attributes_each_span(tmp_path: Path):
+    log = tmp_path / "tel.jsonl"
+    obs = TelemetryObserver(default_detector(), JSONLWriter(log))
+    batch = obs.new_batch()
+    ml = _aspan("private_email", 0, 5, "ml", 0.95)
+    rx = _aspan("EMAIL", 0, 5, "user_regex", 1.0)
+    # rx wins the score tie because it has score 1.0 vs ml's 0.95
+    batch.observe_v2(
+        text="hello",
+        ml_spans=[ml],
+        user_spans=[rx],
+        kept=[rx],
+        events=[OverlapEvent(winner=rx, loser=ml, reason="overlap_score_tie")],
+    )
+    batch.commit()
+    rec = json.loads(log.read_text().strip())
+    sources = {s["source"] for s in rec["spans"] if s["source"] != "baseline"}
+    assert sources == {"ml", "user_regex"}
+    kept_flags = {(s["source"], s["kept"]) for s in rec["spans"] if s["source"] != "baseline"}
+    assert kept_flags == {("ml", False), ("user_regex", True)}
+    assert rec["overlap_events"] == [
+        {
+            "winner_source": "user_regex",
+            "loser_source": "ml",
+            "winner_label": "EMAIL",
+            "loser_label": "private_email",
+            "reason": "overlap_score_tie",
+        }
+    ]
+
+
+def test_v2_keeps_v1_fields_for_backwards_compat(tmp_path: Path):
+    log = tmp_path / "tel.jsonl"
+    obs = TelemetryObserver(default_detector(), JSONLWriter(log))
+    batch = obs.new_batch()
+    ml = _aspan("private_email", 0, 5, "ml")
+    batch.observe_v2(text="hello", ml_spans=[ml], user_spans=[], kept=[ml], events=[])
+    batch.commit()
+    rec = json.loads(log.read_text().strip())
+    assert rec["ml_spans"] == [{"label": "private_email", "len": 5}]
+    assert rec["extra_spans"] == []
+    assert "regex_missed" in rec
+
+
+def test_v2_chunks_field_counts_spans_per_chunk(tmp_path: Path):
+    log = tmp_path / "tel.jsonl"
+    chunker = lambda t: [(0, 10), (10, len(t))] if len(t) > 10 else [(0, len(t))]
+    obs = TelemetryObserver(default_detector(), JSONLWriter(log), chunker=chunker)
+    batch = obs.new_batch()
+    ml1 = _aspan("private_email", 2, 7, "ml")
+    ml2 = _aspan("private_phone", 12, 18, "ml")
+    batch.observe_v2(
+        text="x" * 20, ml_spans=[ml1, ml2], user_spans=[], kept=[ml1, ml2], events=[]
+    )
+    batch.commit()
+    rec = json.loads(log.read_text().strip())
+    assert rec["chunks"] == [
+        {"chars": 10, "ml_spans": 1, "user_spans": 0, "baseline_spans": 0},
+        {"chars": 10, "ml_spans": 1, "user_spans": 0, "baseline_spans": 0},
+    ]
+
+
+def test_v2_no_pii_content_in_record(tmp_path: Path):
+    """Same invariant as v1: raw input substrings must not appear in the log."""
+    log = tmp_path / "tel.jsonl"
+    obs = TelemetryObserver(default_detector(), JSONLWriter(log))
+    batch = obs.new_batch()
+    secret = "hunter2hunter2"
+    ml = _aspan("private_password", 0, len(secret), "ml")
+    batch.observe_v2(
+        text=f"my password is {secret}!",
+        ml_spans=[ml],
+        user_spans=[],
+        kept=[ml],
+        events=[],
+    )
+    batch.commit()
+    blob = log.read_text()
+    assert secret not in blob
+    assert "hunter" not in blob
