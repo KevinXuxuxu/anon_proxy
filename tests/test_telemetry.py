@@ -351,7 +351,9 @@ def test_adapter_mask_request_emits_one_record_per_payload(tmp_path: Path):
             },
         ],
     }
-    anthropic_adapter.mask_request(body, masker)
+    # proxy now owns the scope; callers outside the proxy must wrap their own
+    with masker.request_scope():
+        anthropic_adapter.mask_request(body, masker)
     lines = out.read_text().strip().splitlines()
     assert len(lines) == 1, f"expected 1 record per request, got {len(lines)}"
     rec = json.loads(lines[0])

@@ -31,15 +31,14 @@ def mask_request(body: dict, masker: Masker) -> dict:
     and tool_result.content. The system prompt is left intact because it
     contains static tool definitions and instructions, not user data.
 
-    All Masker.mask() calls for this request are aggregated into a single
-    telemetry record via masker.request_scope().
+    The proxy layer owns the telemetry `request_scope`; this function does
+    not open one. Callers outside the proxy can wrap their own scope.
     """
-    with masker.request_scope():
-        result = dict(body)
-        messages = body.get("messages")
-        if isinstance(messages, list):
-            result["messages"] = [_mask_message(m, masker) for m in messages]
-        return result
+    result = dict(body)
+    messages = body.get("messages")
+    if isinstance(messages, list):
+        result["messages"] = [_mask_message(m, masker) for m in messages]
+    return result
 
 
 def unmask_response(body: dict, masker: Masker) -> dict:

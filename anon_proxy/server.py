@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -188,81 +189,84 @@ async def _handle_messages(request: Request) -> Response:
     except json.JSONDecodeError:
         return await _passthrough(request, body_override=raw_body)
 
-    store_before = len(masker.store)
-    masked = anthropic_adapter.mask_request(body, masker)
-    if debug:
-        new_entries = masker.store.items()[store_before:]
-        _log_request(body, masked, new_entries)
+    t_start = time.perf_counter()
+    with masker.request_scope() as batch:
+        store_before = len(masker.store)
+        t_mask = time.perf_counter()
+        masked = anthropic_adapter.mask_request(body, masker)
+        mask_ms = int((time.perf_counter() - t_mask) * 1000)
+        if debug:
+            new_entries = masker.store.items()[store_before:]
+            _log_request(body, masked, new_entries)
 
-    masked_bytes = json.dumps(masked).encode("utf-8")
-    upstream_headers = _forward_request_headers(request.headers)
-    url = upstream + request.url.path
-    params = dict(request.query_params)
+        masked_bytes = json.dumps(masked).encode("utf-8")
+        upstream_headers = _forward_request_headers(request.headers)
+        url = upstream + request.url.path
+        params = dict(request.query_params)
 
-    if bool(masked.get("stream")):
-        req = client.build_request(
-            "POST", url, content=masked_bytes, headers=upstream_headers, params=params,
-        )
-        upstream_resp = await client.send(req, stream=True)
-
-        if upstream_resp.status_code >= 400:
-            err_body = await upstream_resp.aread()
-            await upstream_resp.aclose()
-            return Response(
-                content=err_body,
-                status_code=upstream_resp.status_code,
-                headers=_filter_response_headers(upstream_resp.headers),
-                media_type=upstream_resp.headers.get("content-type"),
+        if bool(masked.get("stream")):
+            return await _stream_response(
+                client=client,
+                masker=masker,
+                url=url,
+                masked_bytes=masked_bytes,
+                upstream_headers=upstream_headers,
+                params=params,
+                debug=debug,
+                batch=batch,
+                t_start=t_start,
+                mask_ms=mask_ms,
             )
 
-        async def body_iter():
-            upstream_buf: list[str] = []
-            client_buf: list[str] = []
+        t_upstream = time.perf_counter()
+        upstream_resp = await client.post(
+            url, content=masked_bytes, headers=upstream_headers, params=params,
+        )
+        upstream_ms = int((time.perf_counter() - t_upstream) * 1000)
+        content_type = upstream_resp.headers.get("content-type", "")
+        unmask_ms = 0
+        if content_type.startswith("application/json"):
             try:
-                async for out in anthropic_adapter.transform_stream(
-                    upstream_resp.aiter_bytes(),
-                    masker,
-                    on_upstream_text=upstream_buf.append if debug else None,
-                    on_client_text=client_buf.append if debug else None,
-                ):
-                    yield out
-            finally:
+                resp_json = upstream_resp.json()
+            except ValueError:
+                resp_json = None
+            if resp_json is not None and upstream_resp.status_code < 400:
+                t_unmask = time.perf_counter()
+                unmasked = anthropic_adapter.unmask_response(resp_json, masker)
+                unmask_ms = int((time.perf_counter() - t_unmask) * 1000)
                 if debug:
-                    _log_stream_summary("".join(upstream_buf), "".join(client_buf))
-                await upstream_resp.aclose()
-
-        return StreamingResponse(
-            body_iter(),
+                    _log_response(resp_json, unmasked)
+                if batch is not None:
+                    batch.record_latency(
+                        mask_ms=mask_ms,
+                        upstream_ms=upstream_ms,
+                        unmask_ms=unmask_ms,
+                        total_ms=int((time.perf_counter() - t_start) * 1000),
+                    )
+                return Response(
+                    content=json.dumps(unmasked),
+                    status_code=upstream_resp.status_code,
+                    headers=_filter_response_headers(upstream_resp.headers),
+                    media_type="application/json",
+                )
+        if batch is not None:
+            batch.record_latency(
+                mask_ms=mask_ms,
+                upstream_ms=upstream_ms,
+                unmask_ms=unmask_ms,
+                total_ms=int((time.perf_counter() - t_start) * 1000),
+            )
+        return Response(
+            content=upstream_resp.content,
             status_code=upstream_resp.status_code,
             headers=_filter_response_headers(upstream_resp.headers),
-            media_type="text/event-stream",
+            media_type=content_type or None,
         )
 
-    upstream_resp = await client.post(
-        url, content=masked_bytes, headers=upstream_headers, params=params,
-    )
-    content_type = upstream_resp.headers.get("content-type", "")
-    if content_type.startswith("application/json"):
-        try:
-            resp_json = upstream_resp.json()
-        except ValueError:
-            resp_json = None
-        if resp_json is not None and upstream_resp.status_code < 400:
-            unmasked = anthropic_adapter.unmask_response(resp_json, masker)
-            if debug:
-                _log_response(resp_json, unmasked)
-            return Response(
-                content=json.dumps(unmasked),
-                status_code=upstream_resp.status_code,
-                headers=_filter_response_headers(upstream_resp.headers),
-                media_type="application/json",
-            )
-    return Response(
-        content=upstream_resp.content,
-        status_code=upstream_resp.status_code,
-        headers=_filter_response_headers(upstream_resp.headers),
-        media_type=content_type or None,
-    )
+
+async def _stream_response(**kwargs):
+    """Streaming proxy path. Filled in by Task 4."""
+    raise NotImplementedError("streaming path is implemented in the next commit")
 
 
 async def _passthrough(request: Request, *, body_override: bytes | None = None) -> Response:
