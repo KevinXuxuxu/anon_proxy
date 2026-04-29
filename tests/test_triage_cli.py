@@ -120,13 +120,14 @@ def test_triage_json_with_signatures_decrypts_and_strips_text(tmp_path, monkeypa
     key = generate_key()
     store_key(key)
     raw_path = tmp_path / "telemetry-raw.jsonl"
+    # Use gmail.com — a known free-email domain per signatures._FREE_DOMAINS
     raw_path.write_text(json.dumps({
         "ts": "2026-04-29T00:00:00Z",
         "schema": 3,
         "spans": [{
             "label": "EMAIL", "source": "ml", "kept": True, "score": 0.9,
-            "enc_text": encrypt_field("alice@example.com", key),
-            "enc_window": encrypt_field("Email me at alice@example.com today", key),
+            "enc_text": encrypt_field("alice@gmail.com", key),
+            "enc_window": encrypt_field("Email me at alice@gmail.com today", key),
         }],
     }) + "\n")
     monkeypatch.setenv("ANON_PROXY_DATA_DIR", str(tmp_path))
