@@ -211,3 +211,167 @@ def test_interactive_triage_skip_does_not_write_corpus(tmp_path, monkeypatch, fa
     # File may not exist OR may exist but be empty
     if corpus_path.exists():
         assert corpus_path.read_text().strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# 8.5: purge subcommand
+# ---------------------------------------------------------------------------
+
+
+def test_purge_raw_before_date(tmp_path, monkeypatch):
+    raw_path = tmp_path / "telemetry-raw.jsonl"
+    raw_path.write_text(
+        json.dumps({"ts": "2026-01-01T00:00:00Z", "schema": 3, "spans": []}) + "\n" +
+        json.dumps({"ts": "2026-04-29T00:00:00Z", "schema": 3, "spans": []}) + "\n"
+    )
+    monkeypatch.setenv("ANON_PROXY_DATA_DIR", str(tmp_path))
+    main(["purge", "raw", "--before", "2026-04-01"])
+    lines = raw_path.read_text().splitlines()
+    assert len(lines) == 1
+    assert "2026-04-29" in lines[0]
+
+
+def test_purge_corpus_by_id(tmp_path, monkeypatch):
+    corpus_path = tmp_path / "corpus.jsonl"
+    corpus_path.write_text(
+        json.dumps({"id": "r1", "ts": "2026-04-29T00:00:00Z", "review": {"label": "EMAIL"}}) + "\n" +
+        json.dumps({"id": "r2", "ts": "2026-04-29T00:00:00Z", "review": {"label": "PERSON"}}) + "\n"
+    )
+    monkeypatch.setenv("ANON_PROXY_DATA_DIR", str(tmp_path))
+    main(["purge", "corpus", "--id", "r1"])
+    lines = corpus_path.read_text().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["id"] == "r2"
+
+
+# ---------------------------------------------------------------------------
+# 8.6: corpus list/show/export
+# ---------------------------------------------------------------------------
+
+
+def test_corpus_list_prints_ids_and_labels(tmp_path, monkeypatch, capsys):
+    (tmp_path / "corpus.jsonl").write_text(
+        json.dumps({"id": "r1", "ts": "2026-04-29T00:00:00Z", "review": {"label": "EMAIL", "decision": "keep"}}) + "\n"
+    )
+    monkeypatch.setenv("ANON_PROXY_DATA_DIR", str(tmp_path))
+    main(["corpus", "list"])
+    out = capsys.readouterr().out
+    assert "r1" in out
+    assert "EMAIL" in out
+
+
+def test_corpus_show_decrypts(tmp_path, monkeypatch, capsys, fake_keyring):
+    from anon_proxy.crypto import generate_key, store_key, encrypt_field
+    monkeypatch.delenv("ANON_PROXY_TELEMETRY_KEY", raising=False)
+    key = generate_key()
+    store_key(key)
+    rec = {
+        "id": "r1", "ts": "2026-04-29T00:00:00Z",
+        "spans": [{
+            "label": "EMAIL", "source": "ml", "kept": True, "score": 0.9,
+            "enc_text": encrypt_field("alice@example.com", key),
+        }],
+        "review": {"label": "EMAIL", "decision": "keep"},
+    }
+    (tmp_path / "corpus.jsonl").write_text(json.dumps(rec) + "\n")
+    monkeypatch.setenv("ANON_PROXY_DATA_DIR", str(tmp_path))
+    main(["corpus", "show", "--id", "r1"])
+    out = capsys.readouterr().out
+    parsed = json.loads(out)
+    # Show decrypts: enc_text gone, plain text added
+    assert parsed["spans"][0].get("text") == "alice@example.com"
+    assert "enc_text" not in parsed["spans"][0]
+
+
+def test_corpus_export_strips_encrypted_fields(tmp_path, monkeypatch, capsys):
+    rec = {"id": "r1", "ts": "2026-04-29T00:00:00Z",
+           "spans": [{"label": "EMAIL", "source": "ml", "enc_text": "v1:abc"}],
+           "enc_text": "v1:full",
+           "review": {"label": "EMAIL", "decision": "keep"}}
+    (tmp_path / "corpus.jsonl").write_text(json.dumps(rec) + "\n")
+    monkeypatch.setenv("ANON_PROXY_DATA_DIR", str(tmp_path))
+    main(["corpus", "export"])
+    out = capsys.readouterr().out
+    parsed = [json.loads(l) for l in out.splitlines() if l.strip()]
+    assert parsed[0]["spans"][0].get("enc_text") is None or "enc_text" not in parsed[0]["spans"][0]
+    assert parsed[0].get("enc_text") is None or "enc_text" not in parsed[0]
+
+
+# ---------------------------------------------------------------------------
+# 8.7: export-key / import-key
+# ---------------------------------------------------------------------------
+
+
+def test_export_key_prints_base64(monkeypatch, capsys, fake_keyring):
+    from anon_proxy.crypto import generate_key, store_key
+    monkeypatch.delenv("ANON_PROXY_TELEMETRY_KEY", raising=False)
+    key = generate_key()
+    store_key(key)
+    main(["export-key"])
+    out = capsys.readouterr().out
+    assert len(out.strip()) > 40  # base64-encoded 32 bytes is ~44 chars
+
+
+def test_import_key_round_trip(monkeypatch, fake_keyring):
+    import base64
+    from anon_proxy.crypto import generate_key, resolve_key
+    monkeypatch.delenv("ANON_PROXY_TELEMETRY_KEY", raising=False)
+    new_key = generate_key()
+    monkeypatch.setattr(sys, "stdin", io.StringIO(base64.urlsafe_b64encode(new_key).decode("ascii") + "\n"))
+    main(["import-key"])
+    assert resolve_key() == new_key
+
+
+# ---------------------------------------------------------------------------
+# 8.8: suggest-regex
+# ---------------------------------------------------------------------------
+
+
+def test_suggest_regex_from_corpus_clusters_by_signature(tmp_path, monkeypatch, capsys, fake_keyring):
+    from anon_proxy.crypto import generate_key, store_key, encrypt_field
+    monkeypatch.delenv("ANON_PROXY_TELEMETRY_KEY", raising=False)
+    key = generate_key()
+    store_key(key)
+    records = []
+    for n in range(3):
+        records.append({
+            "id": f"r{n}", "ts": "2026-04-29T00:00:00Z",
+            "spans": [{
+                "label": "PHONE", "source": "baseline", "kept": False, "score": 0.0,
+                "enc_text": encrypt_field(f"+44 7700 90012{n}", key),
+            }],
+            "review": {"label": "PHONE", "decision": "keep", "span_index": 0},
+        })
+    (tmp_path / "corpus.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    monkeypatch.setenv("ANON_PROXY_DATA_DIR", str(tmp_path))
+    main(["suggest-regex", "--from-corpus"])
+    out = capsys.readouterr().out
+    assert "PHONE" in out
+    assert "+44" in out
+    assert "n=3" in out
+
+
+# ---------------------------------------------------------------------------
+# 8B: label subcommand
+# ---------------------------------------------------------------------------
+
+
+def test_label_promotes_raw_record_to_corpus(tmp_path, monkeypatch, fake_keyring):
+    from anon_proxy.crypto import generate_key, store_key, encrypt_field
+    monkeypatch.delenv("ANON_PROXY_TELEMETRY_KEY", raising=False)
+    key = generate_key()
+    store_key(key)
+    raw_path = tmp_path / "telemetry-raw.jsonl"
+    rec = {
+        "id": "r1", "ts": "2026-04-29T00:00:00Z", "schema": 3,
+        "spans": [{"label": "EMAIL", "source": "ml", "kept": True, "score": 0.9,
+                   "enc_text": encrypt_field("alice@example.com", key)}],
+    }
+    raw_path.write_text(json.dumps(rec) + "\n")
+    monkeypatch.setenv("ANON_PROXY_DATA_DIR", str(tmp_path))
+    main(["label", "r1", "--label", "EMAIL", "--decision", "keep"])
+    corpus_lines = (tmp_path / "corpus.jsonl").read_text().splitlines()
+    assert len(corpus_lines) == 1
+    promoted = json.loads(corpus_lines[0])
+    assert promoted["review"]["decision"] == "keep"
+    assert promoted["review"]["label"] == "EMAIL"

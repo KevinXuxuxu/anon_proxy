@@ -86,15 +86,6 @@ def main(argv: list[str] | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Stub handler used for Phase 8B subcommands
-# ---------------------------------------------------------------------------
-
-
-def _stub(args):
-    print(f"[stub] {args.cmd} args={vars(args)}", file=sys.stderr)
-
-
-# ---------------------------------------------------------------------------
 # 8.2: metrics handler
 # ---------------------------------------------------------------------------
 
@@ -251,15 +242,219 @@ def _interactive_triage(records: list[dict], data_dir: Path) -> None:
             # "s" or anything else: skip, continue to next record
 
 
+# ---------------------------------------------------------------------------
+# 8.5: purge handler
+# ---------------------------------------------------------------------------
+
+
+def _purge_handler(args):
+    if args.scope == "raw":
+        path = _data_dir() / "telemetry-raw.jsonl"
+        if not path.exists() or not args.before:
+            return
+        kept = []
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+                if rec["ts"] >= args.before:
+                    kept.append(line)
+            except Exception:
+                kept.append(line)
+        path.write_text("\n".join(kept) + ("\n" if kept else ""))
+    else:  # corpus
+        path = _data_dir() / "corpus.jsonl"
+        if not path.exists() or not args.id:
+            return
+        kept = []
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+                if rec.get("id") != args.id:
+                    kept.append(line)
+            except Exception:
+                kept.append(line)
+        path.write_text("\n".join(kept) + ("\n" if kept else ""))
+
+
+# ---------------------------------------------------------------------------
+# 8.6: corpus handler (list / show / export)
+# ---------------------------------------------------------------------------
+
+
+def _corpus_handler(args):
+    path = _data_dir() / "corpus.jsonl"
+    if not path.exists():
+        print("Empty corpus.")
+        return
+    records = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    if args.action == "list":
+        for r in records:
+            review = r.get("review", {})
+            print(
+                f"{r.get('id', '?')}  {r.get('ts', '?')}  "
+                f"{review.get('label', '?')}  {review.get('decision', '?')}"
+            )
+    elif args.action == "show":
+        if not args.id:
+            print("--id required for show", file=sys.stderr)
+            sys.exit(2)
+        from anon_proxy.crypto import resolve_key, decrypt_field
+        key = resolve_key()
+        for r in records:
+            if r.get("id") == args.id:
+                for span in r.get("spans", []):
+                    if "enc_text" in span:
+                        span["text"] = decrypt_field(span["enc_text"], key)
+                        del span["enc_text"]
+                    if "enc_window" in span:
+                        span["window"] = decrypt_field(span["enc_window"], key)
+                        del span["enc_window"]
+                if "enc_text" in r:
+                    r["text"] = decrypt_field(r["enc_text"], key)
+                    del r["enc_text"]
+                print(json.dumps(r, indent=2))
+                return
+        print(f"id {args.id!r} not found", file=sys.stderr)
+        sys.exit(1)
+    elif args.action == "export":
+        for r in records:
+            for span in r.get("spans", []):
+                span.pop("enc_text", None)
+                span.pop("enc_window", None)
+            r.pop("enc_text", None)
+            print(json.dumps(r))
+
+
+# ---------------------------------------------------------------------------
+# 8.7: export-key / import-key
+# ---------------------------------------------------------------------------
+
+
+def _export_key_handler(args):
+    import base64
+    from anon_proxy.crypto import resolve_key
+    key = resolve_key()
+    print(
+        "WARNING: anyone with this string can decrypt all your stored telemetry.",
+        file=sys.stderr,
+    )
+    print(base64.urlsafe_b64encode(key).decode("ascii"))
+
+
+def _import_key_handler(args):
+    import base64
+    from anon_proxy.crypto import store_key, KEY_BYTES
+    encoded = sys.stdin.read().strip()
+    key = base64.urlsafe_b64decode(encoded.encode("ascii"))
+    if len(key) != KEY_BYTES:
+        print(f"key must decode to {KEY_BYTES} bytes; got {len(key)}", file=sys.stderr)
+        sys.exit(2)
+    store_key(key)
+    print("Key stored in keyring.", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# 8.8: suggest-regex
+# ---------------------------------------------------------------------------
+
+
+def _suggest_regex_handler(args):
+    from collections import defaultdict
+    from anon_proxy.crypto import resolve_key, decrypt_field
+    from anon_proxy.signatures import compute_signature
+
+    path = _data_dir() / "corpus.jsonl"
+    if not path.exists():
+        print("Empty corpus.", file=sys.stderr)
+        return
+    key = resolve_key()
+    clusters: dict[tuple, list[str]] = defaultdict(list)
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        review = rec.get("review", {})
+        if review.get("decision") != "keep":
+            continue
+        label = review.get("label", "?")
+        for span in rec.get("spans", []):
+            if "enc_text" not in span:
+                continue
+            text = decrypt_field(span["enc_text"], key)
+            sig = compute_signature(label, text)
+            sig_key = tuple(sorted((k, str(v)) for k, v in sig.items() if k != "label"))
+            clusters[(label, sig_key)].append(text)
+    for (label, sig_key), examples in sorted(clusters.items(), key=lambda kv: -len(kv[1])):
+        sig_dict = dict(sig_key)
+        proposal = _propose_regex(label, sig_dict)
+        print(f"{label}  signature={sig_dict}  n={len(examples)}  proposed: {proposal}")
+
+
+def _propose_regex(label: str, sig: dict) -> str:
+    if label == "PHONE":
+        cc = sig.get("country_code", "")
+        digits = sig.get("digit_count", "")
+        if cc and cc != "None":
+            return rf"\{cc} ?\d{{{digits}}}"
+        return rf"\d{{{digits}}}"
+    if label == "EMAIL":
+        return r"[\w.+-]+@[\w.-]+\.\w+"
+    return "(no template for this label yet — propose manually)"
+
+
+# ---------------------------------------------------------------------------
+# 8B: label handler
+# ---------------------------------------------------------------------------
+
+
+def _label_handler(args):
+    """Promote a raw record (by id) to corpus with the given label/decision."""
+    from anon_proxy.retention import CorpusWriter
+
+    raw_path = _data_dir() / "telemetry-raw.jsonl"
+    if not raw_path.exists():
+        print("No raw telemetry.", file=sys.stderr)
+        sys.exit(1)
+    found = None
+    for line in raw_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if rec.get("id") == args.record_id:
+            found = rec
+            break
+    if found is None:
+        print(f"record_id {args.record_id!r} not found", file=sys.stderr)
+        sys.exit(1)
+    corpus = CorpusWriter(_data_dir())
+    corpus.write({
+        **found,
+        "review": {
+            "label": args.label,
+            "decision": args.decision,
+            "reviewer_ts": datetime.now(timezone.utc).isoformat(),
+        },
+    })
+
+
+# ---------------------------------------------------------------------------
+# Handler registry
+# ---------------------------------------------------------------------------
+
+
 _HANDLERS: dict[str, object] = {
     "triage": _triage_handler,
-    "label": _stub,       # implemented in Phase 8B
-    "corpus": _stub,      # implemented in Phase 8B
-    "purge": _stub,       # implemented in Phase 8B
+    "label": _label_handler,
+    "corpus": _corpus_handler,
+    "purge": _purge_handler,
     "metrics": _metrics_handler,
-    "export-key": _stub,  # implemented in Phase 8B
-    "import-key": _stub,  # implemented in Phase 8B
-    "suggest-regex": _stub,  # implemented in Phase 8B
+    "export-key": _export_key_handler,
+    "import-key": _import_key_handler,
+    "suggest-regex": _suggest_regex_handler,
 }
 
 
