@@ -600,3 +600,26 @@ def test_record_latency_last_call_wins(tmp_path: Path):
     batch.commit()
     rec = json.loads(log.read_text().strip())
     assert rec["latency_ms"] == {"mask": 10, "upstream": 20, "unmask": 5, "total": 35}
+
+
+def test_request_scope_isolated_per_masker(tmp_path: Path):
+    """Two Masker instances must not share each other's batches."""
+    log_a = tmp_path / "a.jsonl"
+    log_b = tmp_path / "b.jsonl"
+    obs_a = TelemetryObserver(default_detector(), JSONLWriter(log_a))
+    obs_b = TelemetryObserver(default_detector(), JSONLWriter(log_b))
+    masker_a = Masker(filter=_DummyFilter(), store=PIIStore(), telemetry=obs_a)
+    masker_b = Masker(filter=_DummyFilter(), store=PIIStore(), telemetry=obs_b)
+
+    with masker_a.request_scope() as batch_a:
+        with masker_b.request_scope() as batch_b:
+            # masker_b must NOT reuse masker_a's batch
+            assert batch_b is not batch_a
+            masker_b.mask("hello-b")
+        # masker_b's scope committed → log_b should have one record
+        assert log_b.exists()
+        assert log_b.read_text().count("\n") == 1
+        masker_a.mask("hello-a")
+    # masker_a's scope committed → log_a should have one record
+    assert log_a.exists()
+    assert log_a.read_text().count("\n") == 1

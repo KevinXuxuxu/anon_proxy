@@ -109,6 +109,7 @@ class TelemetryBatch:
         "_req_chunks",
         "_committed",
         "_latency_ms",
+        "_owner",
     )
 
     def __init__(self, observer: "TelemetryObserver") -> None:
@@ -121,6 +122,7 @@ class TelemetryBatch:
         self._req_chunks: int = 0
         self._committed: bool = False
         self._latency_ms: dict | None = None
+        self._owner: object | None = None
 
     def observe(
         self,

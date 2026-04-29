@@ -134,17 +134,19 @@ class Masker:
         so callers can record extra fields (e.g. latency) before the batch
         commits at scope exit.
 
-        Reentrant: a nested scope reuses the outer batch and does NOT commit
-        when it exits — only the outermost scope commits.
+        Reentrant: a nested scope from the same Masker reuses the outer batch and
+        does NOT commit when it exits — only the outermost scope commits.
+        If a different Masker enters a scope, it creates a new batch.
         """
         if self._telemetry is None:
             yield None
             return
         existing = _current_batch.get()
-        if existing is not None:
+        if existing is not None and getattr(existing, "_owner", None) is self:
             yield existing
             return
         batch = self._telemetry.new_batch()
+        batch._owner = self
         token = _current_batch.set(batch)
         try:
             yield batch
