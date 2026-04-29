@@ -17,6 +17,7 @@ quotes/backslashes don't corrupt the stream.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator, Callable
 
 from anon_proxy.masker import Masker
@@ -119,6 +120,7 @@ async def transform_stream(
     *,
     on_upstream_text: TextHook | None = None,
     on_client_text: TextHook | None = None,
+    on_unmask_us: Callable[[int], None] | None = None,
 ) -> AsyncIterator[bytes]:
     """Unmask masked payloads in an Anthropic SSE stream.
 
@@ -133,7 +135,18 @@ async def transform_stream(
     `on_upstream_text` fires with each raw masked fragment as it arrives from
     upstream; `on_client_text` fires with each fragment emitted to the client
     (post-unmask). Both are optional hooks for debug/logging.
+    `on_unmask_us` fires with the microseconds spent on each unmask call;
+    the caller accumulates the total and converts to ms at commit time.
     """
+
+    def _timed_unmask(value: str, *, json_ctx: bool) -> str:
+        if on_unmask_us is None:
+            return masker.unmask_json(value) if json_ctx else masker.unmask(value)
+        t = time.perf_counter()
+        out = masker.unmask_json(value) if json_ctx else masker.unmask(value)
+        on_unmask_us(int((time.perf_counter() - t) * 1_000_000))
+        return out
+
     blocks: dict[int, dict] = {}
     raw = b""
     async for chunk in upstream_bytes:
@@ -143,6 +156,7 @@ async def transform_stream(
             event_type, data_str = _parse_sse(event_bytes)
             for out_event, out_data in _transform_event(
                 event_type, data_str, masker, blocks, on_upstream_text, on_client_text,
+                _timed_unmask,
             ):
                 yield _serialize_sse(out_event, out_data)
     if raw.strip():
@@ -184,7 +198,14 @@ def _transform_event(
     blocks: dict[int, dict],
     on_upstream_text: TextHook | None,
     on_client_text: TextHook | None,
+    timed_unmask: Callable[[str, bool], str] | None = None,
 ):
+    # Use timed_unmask if provided, otherwise fall back to plain _unmask_for.
+    def _do_unmask(text: str, escape: bool) -> str:
+        if timed_unmask is not None:
+            return timed_unmask(text, json_ctx=escape)
+        return _unmask_for(masker, text, escape)
+
     if data_str is None:
         yield event_type, None
         return
@@ -204,7 +225,7 @@ def _transform_event(
             if cb.get("type") == "tool_use":
                 input_val = cb.get("input")
                 if isinstance(input_val, (dict, list)) and input_val:
-                    new_cb = {**cb, "input": _walk_strings(input_val, masker.unmask)}
+                    new_cb = {**cb, "input": _walk_strings(input_val, lambda v: _do_unmask(v, False))}
                     yield event_type, json.dumps({**data, "content_block": new_cb})
                     return
         yield event_type, data_str
@@ -223,7 +244,7 @@ def _transform_event(
             emittable, remainder = _split_emit(buf)
             state["buffer"] = remainder
             if emittable:
-                unmasked = _unmask_for(masker, emittable, state["escape"])
+                unmasked = _do_unmask(emittable, state["escape"])
                 if on_client_text:
                     on_client_text(unmasked)
                 new_data = {**data, "delta": {**delta, field: unmasked}}
@@ -236,7 +257,7 @@ def _transform_event(
         idx = data.get("index", 0)
         state = blocks.pop(idx, None)
         if state and state["buffer"]:
-            unmasked = _unmask_for(masker, state["buffer"], state["escape"])
+            unmasked = _do_unmask(state["buffer"], state["escape"])
             if on_client_text:
                 on_client_text(unmasked)
             flush = {

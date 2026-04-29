@@ -190,7 +190,10 @@ async def _handle_messages(request: Request) -> Response:
         return await _passthrough(request, body_override=raw_body)
 
     t_start = time.perf_counter()
-    with masker.request_scope() as batch:
+    batch_cm = masker.request_scope()
+    batch = batch_cm.__enter__()
+    streaming_handed_off = False
+    try:
         store_before = len(masker.store)
         t_mask = time.perf_counter()
         masked = anthropic_adapter.mask_request(body, masker)
@@ -205,17 +208,12 @@ async def _handle_messages(request: Request) -> Response:
         params = dict(request.query_params)
 
         if bool(masked.get("stream")):
+            streaming_handed_off = True
             return await _stream_response(
-                client=client,
-                masker=masker,
-                url=url,
-                masked_bytes=masked_bytes,
-                upstream_headers=upstream_headers,
-                params=params,
-                debug=debug,
-                batch=batch,
-                t_start=t_start,
-                mask_ms=mask_ms,
+                client=client, masker=masker, url=url,
+                masked_bytes=masked_bytes, upstream_headers=upstream_headers,
+                params=params, debug=debug, batch=batch, batch_cm=batch_cm,
+                t_start=t_start, mask_ms=mask_ms,
             )
 
         return await _handle_non_streaming(
@@ -224,6 +222,9 @@ async def _handle_messages(request: Request) -> Response:
             masked_bytes=masked_bytes, url=url,
             upstream_headers=upstream_headers, params=params, debug=debug,
         )
+    finally:
+        if not streaming_handed_off:
+            batch_cm.__exit__(None, None, None)
 
 
 async def _handle_non_streaming(
@@ -297,9 +298,82 @@ def _build_unmasked_response(
     )
 
 
-async def _stream_response(**kwargs):
-    """Streaming proxy path. Filled in by Task 4."""
-    raise NotImplementedError("streaming path is implemented in the next commit")
+async def _stream_response(
+    *,
+    client: httpx.AsyncClient,
+    masker: Masker,
+    url: str,
+    masked_bytes: bytes,
+    upstream_headers: dict,
+    params: dict,
+    debug: bool,
+    batch,
+    batch_cm,
+    t_start: float,
+    mask_ms: int,
+) -> Response:
+    """Streaming proxy path. Records latency in body_iter's finally and exits the request scope there."""
+    req = client.build_request(
+        "POST", url, content=masked_bytes, headers=upstream_headers, params=params,
+    )
+    t_upstream = time.perf_counter()
+    upstream_resp = await client.send(req, stream=True)
+
+    if upstream_resp.status_code >= 400:
+        err_body = await upstream_resp.aread()
+        await upstream_resp.aclose()
+        if batch is not None:
+            batch.record_latency(
+                mask_ms=mask_ms,
+                upstream_ms=int((time.perf_counter() - t_upstream) * 1000),
+                unmask_ms=0,
+                total_ms=int((time.perf_counter() - t_start) * 1000),
+            )
+        batch_cm.__exit__(None, None, None)
+        return Response(
+            content=err_body,
+            status_code=upstream_resp.status_code,
+            headers=_filter_response_headers(upstream_resp.headers),
+            media_type=upstream_resp.headers.get("content-type"),
+        )
+
+    async def body_iter():
+        upstream_buf: list[str] = []
+        client_buf: list[str] = []
+        unmask_us_total = 0  # accumulated microseconds across all chunks
+
+        def acc_unmask_us(us: int) -> None:
+            nonlocal unmask_us_total
+            unmask_us_total += us
+
+        try:
+            async for out in anthropic_adapter.transform_stream(
+                upstream_resp.aiter_bytes(),
+                masker,
+                on_upstream_text=upstream_buf.append if debug else None,
+                on_client_text=client_buf.append if debug else None,
+                on_unmask_us=acc_unmask_us,
+            ):
+                yield out
+        finally:
+            if debug:
+                _log_stream_summary("".join(upstream_buf), "".join(client_buf))
+            await upstream_resp.aclose()
+            if batch is not None:
+                batch.record_latency(
+                    mask_ms=mask_ms,
+                    upstream_ms=int((time.perf_counter() - t_upstream) * 1000),
+                    unmask_ms=unmask_us_total // 1000,
+                    total_ms=int((time.perf_counter() - t_start) * 1000),
+                )
+            batch_cm.__exit__(None, None, None)
+
+    return StreamingResponse(
+        body_iter(),
+        status_code=upstream_resp.status_code,
+        headers=_filter_response_headers(upstream_resp.headers),
+        media_type="text/event-stream",
+    )
 
 
 async def _passthrough(request: Request, *, body_override: bytes | None = None) -> Response:
