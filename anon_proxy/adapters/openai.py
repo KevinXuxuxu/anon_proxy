@@ -40,12 +40,17 @@ def mask_request(body: dict, masker: Masker) -> dict:
     return result
 
 
-def unmask_response(body: dict, masker: Masker) -> dict:
-    """Return a copy of a non-streaming response with text unmasked."""
+def unmask_response(body: dict, masker: Masker, *, telemetry_batch=None, side: str = "response") -> dict:
+    """Return a copy of a non-streaming response with text unmasked.
+
+    When `telemetry_batch` is provided, runs detectors on each text content item
+    before unmasking and feeds results into the batch tagged with `side`.
+    This catches "leak-back" — raw PII the model emits that the outbound masker missed.
+    """
     result = dict(body)
     choices = body.get("choices")
     if isinstance(choices, list):
-        result["choices"] = [_unmask_choice(c, masker) for c in choices]
+        result["choices"] = [_unmask_choice(c, masker, telemetry_batch=telemetry_batch, side=side) for c in choices]
     return result
 
 
@@ -122,16 +127,16 @@ def _mask_tool(tool: dict, masker: Masker) -> dict:
     return result
 
 
-def _unmask_choice(choice: dict, masker: Masker) -> dict:
+def _unmask_choice(choice: dict, masker: Masker, *, telemetry_batch=None, side: str = "response") -> dict:
     """Unmask a response choice."""
     result = dict(choice)
     message = choice.get("message")
     if isinstance(message, dict):
-        result["message"] = _unmask_message(message, masker)
+        result["message"] = _unmask_message(message, masker, telemetry_batch=telemetry_batch, side=side)
     return result
 
 
-def _unmask_message(message: dict, masker: Masker) -> dict:
+def _unmask_message(message: dict, masker: Masker, *, telemetry_batch=None, side: str = "response") -> dict:
     """Unmask a response message."""
     if not isinstance(message, dict):
         return message
@@ -141,9 +146,11 @@ def _unmask_message(message: dict, masker: Masker) -> dict:
     # Unmask content
     content = message.get("content")
     if isinstance(content, str):
+        if telemetry_batch is not None and content:
+            _observe_response_text(content, masker, telemetry_batch, side)
         result["content"] = masker.unmask(content)
     elif isinstance(content, list):
-        result["content"] = [_unmask_content_item(c, masker) for c in content]
+        result["content"] = [_unmask_content_item(c, masker, telemetry_batch=telemetry_batch, side=side) for c in content]
 
     # Unmask tool calls
     tool_calls = message.get("tool_calls")
@@ -153,11 +160,24 @@ def _unmask_message(message: dict, masker: Masker) -> dict:
     return result
 
 
-def _unmask_content_item(item: dict, masker: Masker) -> dict:
+def _unmask_content_item(item: dict, masker: Masker, *, telemetry_batch=None, side: str = "response") -> dict:
     """Unmask a content item."""
     if item.get("type") == "text" and isinstance(item.get("text"), str):
-        return {**item, "text": masker.unmask(item["text"])}
+        text = item["text"]
+        if telemetry_batch is not None and text:
+            _observe_response_text(text, masker, telemetry_batch, side)
+        return {**item, "text": masker.unmask(text)}
     return item
+
+
+def _observe_response_text(text: str, masker: Masker, telemetry_batch, side: str) -> None:
+    """Run detectors on response text; feed spans into the batch tagged with side."""
+    ml_spans, user_spans = masker.detect_only(text)
+    kept = ml_spans + user_spans
+    telemetry_batch.observe_v2(
+        text=text, ml_spans=ml_spans, user_spans=user_spans, kept=kept, events=[],
+        side=side,
+    )
 
 
 def _unmask_tool_call(tool_call: dict, masker: Masker) -> dict:
