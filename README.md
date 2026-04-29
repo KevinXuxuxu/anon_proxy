@@ -313,6 +313,64 @@ logged requests.
 
 If you want stricter regex coverage (e.g. international phone formats), pass your own via `--patterns` — user regexes count as "caught" in telemetry, so the log shows you what's *still* leaking after every configured layer runs.
 
+## Local PII telemetry (opt-in)
+
+By default, telemetry records labels and lengths only — no raw PII content.
+With `--telemetry-store-pii`, anon-proxy can also encrypt and store the
+detected entity text + a ±200 character context window per span, keyed on
+your OS keyring. This unlocks:
+
+- **Triage** false positives and false negatives in your own terminal.
+- **Build** a labeled benchmark corpus that lives across detector versions.
+- **Catch leak-back** — model emitting raw PII the masker missed outbound.
+- **Evaluate** new detector versions against your real traffic offline.
+
+Encryption is mandatory whenever PII is stored; the proxy refuses to start
+without a keyring key. See [SECURITY.md](SECURITY.md) for the threat model.
+
+### Modes
+
+| Flag | What's stored |
+|---|---|
+| `--telemetry` | Labels, lengths, scores. No PII content. (Default if telemetry is on.) |
+| `--telemetry --telemetry-store-pii` | Adds encrypted entity text + ±200 char window per span. |
+| `… --telemetry-corpus` | Adds full encrypted user-side text. |
+| `… --telemetry-corpus-include-responses` | Adds full encrypted response text. |
+
+### Workflow
+
+```bash
+# First-run key setup (generates and stores in OS keyring)
+anon-proxy --telemetry-init-key
+
+# Run with Lean mode capture
+anon-proxy --telemetry --telemetry-store-pii
+
+# Weekly review
+anon-proxy telemetry triage --days 7
+anon-proxy telemetry-report
+
+# Mine the labeled corpus for regex candidates
+anon-proxy telemetry suggest-regex --from-corpus
+```
+
+### Storage
+
+By default, telemetry lives in:
+- macOS: `~/Library/Application Support/anon-proxy/`
+- Linux: `$XDG_DATA_HOME/anon-proxy/` (typically `~/.local/share/anon-proxy/`)
+
+Three files:
+- `telemetry-raw.jsonl` — auto-purged after 30 days or 50 MB (whichever first)
+- `corpus.jsonl` — your hand-curated labeled records, no auto-purge
+- `metrics.jsonl` — daily aggregate rollups (zero PII), no auto-purge
+
+The proxy warns if you point `--telemetry-path` under a known cloud-sync root
+(Dropbox, iCloud Drive, OneDrive, etc.) — the encrypted blob would be
+replicated to that service indefinitely.
+
+---
+
 ## Next steps / roadmap
 
 - **Quality assurance** : Enhance PII detection quality tracking and add comprehensive unit/integration tests with benchmarking.
