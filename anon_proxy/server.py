@@ -208,13 +208,14 @@ async def _handle_messages(request: Request) -> Response:
         params = dict(request.query_params)
 
         if bool(masked.get("stream")):
-            streaming_handed_off = True
-            return await _stream_response(
+            response = await _stream_response(
                 client=client, masker=masker, url=url,
                 masked_bytes=masked_bytes, upstream_headers=upstream_headers,
                 params=params, debug=debug, batch=batch, batch_cm=batch_cm,
                 t_start=t_start, mask_ms=mask_ms,
             )
+            streaming_handed_off = True
+            return response
 
         return await _handle_non_streaming(
             client=client, masker=masker, batch=batch,
