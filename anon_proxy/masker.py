@@ -149,7 +149,15 @@ class Masker:
         try:
             yield batch
         finally:
-            _current_batch.reset(token)
+            # reset() may raise ValueError when the streaming body_iter()
+            # generator resumes in a different async Context (the token was
+            # created in _handle_messages' context, but body_iter's finally
+            # runs in the generator's context). Swallow it — the important
+            # thing is that commit() always runs.
+            try:
+                _current_batch.reset(token)
+            except ValueError:
+                pass
             commit = getattr(batch, "commit", None)
             if callable(commit):
                 commit()
