@@ -218,50 +218,83 @@ async def _handle_messages(request: Request) -> Response:
                 mask_ms=mask_ms,
             )
 
-        t_upstream = time.perf_counter()
-        upstream_resp = await client.post(
-            url, content=masked_bytes, headers=upstream_headers, params=params,
+        return await _handle_non_streaming(
+            client=client, masker=masker, batch=batch,
+            t_start=t_start, mask_ms=mask_ms,
+            masked_bytes=masked_bytes, url=url,
+            upstream_headers=upstream_headers, params=params, debug=debug,
         )
-        upstream_ms = int((time.perf_counter() - t_upstream) * 1000)
-        content_type = upstream_resp.headers.get("content-type", "")
-        unmask_ms = 0
-        if content_type.startswith("application/json"):
-            try:
-                resp_json = upstream_resp.json()
-            except ValueError:
-                resp_json = None
-            if resp_json is not None and upstream_resp.status_code < 400:
-                t_unmask = time.perf_counter()
-                unmasked = anthropic_adapter.unmask_response(resp_json, masker)
-                unmask_ms = int((time.perf_counter() - t_unmask) * 1000)
-                if debug:
-                    _log_response(resp_json, unmasked)
-                if batch is not None:
-                    batch.record_latency(
-                        mask_ms=mask_ms,
-                        upstream_ms=upstream_ms,
-                        unmask_ms=unmask_ms,
-                        total_ms=int((time.perf_counter() - t_start) * 1000),
-                    )
-                return Response(
+
+
+async def _handle_non_streaming(
+    *,
+    client: httpx.AsyncClient,
+    masker: Masker,
+    batch,
+    t_start: float,
+    mask_ms: int,
+    masked_bytes: bytes,
+    url: str,
+    upstream_headers: dict,
+    params: dict,
+    debug: bool,
+) -> Response:
+    """Non-streaming branch of _handle_messages: upstream call + unmask + record latency."""
+    t_upstream = time.perf_counter()
+    upstream_resp = await client.post(
+        url, content=masked_bytes, headers=upstream_headers, params=params,
+    )
+    upstream_ms = int((time.perf_counter() - t_upstream) * 1000)
+    content_type = upstream_resp.headers.get("content-type", "")
+
+    response, unmask_ms = _build_unmasked_response(upstream_resp, content_type, masker, debug)
+
+    if batch is not None:
+        batch.record_latency(
+            mask_ms=mask_ms,
+            upstream_ms=upstream_ms,
+            unmask_ms=unmask_ms,
+            total_ms=int((time.perf_counter() - t_start) * 1000),
+        )
+    return response
+
+
+def _build_unmasked_response(
+    upstream_resp: httpx.Response,
+    content_type: str,
+    masker: Masker,
+    debug: bool,
+) -> tuple[Response, int]:
+    """Return (Response, unmask_ms). unmask_ms=0 when no unmask phase ran (non-JSON or 4xx/5xx)."""
+    if content_type.startswith("application/json"):
+        try:
+            resp_json = upstream_resp.json()
+        except ValueError:
+            resp_json = None
+        if resp_json is not None and upstream_resp.status_code < 400:
+            t_unmask = time.perf_counter()
+            unmasked = anthropic_adapter.unmask_response(resp_json, masker)
+            unmask_ms = int((time.perf_counter() - t_unmask) * 1000)
+            if debug:
+                _log_response(resp_json, unmasked)
+            return (
+                Response(
                     content=json.dumps(unmasked),
                     status_code=upstream_resp.status_code,
                     headers=_filter_response_headers(upstream_resp.headers),
                     media_type="application/json",
-                )
-        if batch is not None:
-            batch.record_latency(
-                mask_ms=mask_ms,
-                upstream_ms=upstream_ms,
-                unmask_ms=unmask_ms,
-                total_ms=int((time.perf_counter() - t_start) * 1000),
+                ),
+                unmask_ms,
             )
-        return Response(
+    return (
+        Response(
             content=upstream_resp.content,
             status_code=upstream_resp.status_code,
             headers=_filter_response_headers(upstream_resp.headers),
             media_type=content_type or None,
-        )
+        ),
+        0,  # no unmask phase ran (non-JSON or upstream error)
+    )
 
 
 async def _stream_response(**kwargs):
