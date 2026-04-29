@@ -19,6 +19,45 @@ from pathlib import Path
 from anon_proxy.telemetry import DEFAULT_PATH
 
 
+# Map ML / regex labels to a canonical form so the "nearest same-label"
+# comparison treats e.g. `private_email` (ML) and `EMAIL` (regex) as the
+# same semantic kind. Mirror of the canonicalization in `anon_proxy.eval`,
+# kept separate to avoid the report depending on the eval module.
+_CANONICAL_LABEL: dict[str, str] = {
+    "EMAIL": "EMAIL",
+    "PHONE_NANP": "PHONE",
+    "PHONE_INTL": "PHONE",
+    "PHONE_LOOSE": "PHONE",
+    "SSN": "SSN",
+    "IPV4": "IP",
+    "IPV6": "IP",
+    "private_email": "EMAIL",
+    "private_phone": "PHONE",
+    "private_person": "PERSON",
+    "private_address": "ADDRESS",
+    "private_account_number": "ACCOUNT",
+    "private_date": "DATE",
+    "private_url": "URL",
+    "private_secret": "SECRET",
+    "private_ssn": "SSN",
+    "private_ip": "IP",
+    "email": "EMAIL",
+    "phone": "PHONE",
+    "person": "PERSON",
+    "address": "ADDRESS",
+    "account_number": "ACCOUNT",
+    "date": "DATE",
+    "url": "URL",
+    "secret": "SECRET",
+    "ssn": "SSN",
+    "ip": "IP",
+}
+
+
+def _canonical(label: str) -> str:
+    return _CANONICAL_LABEL.get(label, label)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="anon-proxy telemetry report — analyze local mask logs for detector gaps",
@@ -83,7 +122,7 @@ def _render(records: list[dict], path: Path) -> None:
             if not m.get("ml_within_50ch"):
                 isolated += 1
             nearest_label = m.get("nearest_ml_label")
-            if nearest_label and nearest_label.upper() == m["label"].upper():
+            if nearest_label and _canonical(nearest_label) == _canonical(m["label"]):
                 nearest_same_label += 1
             if m.get("boundary_zone"):
                 boundary_zone_hits += 1
