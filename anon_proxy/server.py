@@ -30,11 +30,14 @@ from starlette.routing import Mount, Route
 
 from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.adapters import openai as openai_adapter
+from anon_proxy.crypto import KeyNotFoundError, ensure_key_exists, resolve_key
 from anon_proxy.masker import Masker
 from anon_proxy.privacy_filter import PrivacyFilter, load_merge_gap
 from anon_proxy.regex_detector import RegexDetector, load_patterns
+from anon_proxy.storage_paths import exclude_from_time_machine, is_under_sync_root, secure_create_dir
 from anon_proxy.telemetry import (
     DEFAULT_PATH as TELEMETRY_DEFAULT_PATH,
+    CaptureMode,
     JSONLWriter,
     TelemetryObserver,
     default_detector as default_telemetry_detector,
@@ -593,6 +596,77 @@ def _parse_extra_upstream(spec: str) -> tuple[str, UpstreamConfig]:
     )
 
 
+def build_telemetry_observer(
+    *,
+    store_pii: bool,
+    corpus: bool,
+    include_responses: bool,
+    raw_path: Path,
+    detector_patterns_path: Path | None = None,
+    chunker=None,
+) -> TelemetryObserver:
+    """Construct a TelemetryObserver for the requested capture mode.
+
+    Flag implication: include_responses → corpus → store_pii (each later
+    flag implies the earlier ones). Returns a TelemetryObserver wired with
+    the right writer, detector, and (when storing PII) the keyring key.
+
+    Raises SystemExit(2) if the user requested a PII-storing mode but no
+    encryption key is available. Refuse-to-start by design — we never
+    persist PII in cleartext.
+    """
+    if include_responses:
+        mode = CaptureMode.CORPUS_WITH_RESPONSES
+    elif corpus:
+        mode = CaptureMode.CORPUS
+    elif store_pii:
+        mode = CaptureMode.LEAN
+    else:
+        mode = CaptureMode.ZERO_PII
+
+    key: bytes | None = None
+    if mode != CaptureMode.ZERO_PII:
+        try:
+            key = resolve_key()
+        except KeyNotFoundError as e:
+            print(f"anon-proxy: {e}", file=sys.stderr)
+            print(
+                "Run with --telemetry-init-key once to generate and store a key.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from e
+
+        sync_root = is_under_sync_root(raw_path)
+        if sync_root:
+            print(
+                f"anon-proxy WARNING: telemetry path is under '{sync_root}'. The encrypted "
+                f"blob will be replicated to that service. Consider --telemetry-path elsewhere.",
+                file=sys.stderr,
+            )
+        secure_create_dir(raw_path.parent)
+        if not exclude_from_time_machine(raw_path.parent):
+            if sys.platform == "darwin":
+                print(
+                    "anon-proxy: tmutil addexclusion failed; encrypted telemetry may end up in "
+                    "Time Machine backups.",
+                    file=sys.stderr,
+                )
+
+    sink = JSONLWriter(raw_path)
+    detector = (
+        default_telemetry_detector()
+        if detector_patterns_path is None
+        else RegexDetector(load_patterns(detector_patterns_path))
+    )
+    return TelemetryObserver(
+        detector=detector,
+        sink=sink,
+        chunker=chunker,
+        capture_mode=mode,
+        encryption_key=key,
+    )
+
+
 def main() -> None:
     import argparse
     import uvicorn
@@ -657,7 +731,36 @@ def main() -> None:
         default=os.environ.get("ANON_PROXY_TELEMETRY_PATH"),
         help=f"Override the telemetry log path (default: {TELEMETRY_DEFAULT_PATH}).",
     )
+    parser.add_argument(
+        "--telemetry-store-pii",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_TELEMETRY_STORE_PII", "").lower() in ("1", "true", "yes"),
+        help="Lean mode: encrypt and store entity text + ±200 char windows. Requires keyring or env-var key.",
+    )
+    parser.add_argument(
+        "--telemetry-corpus",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_TELEMETRY_CORPUS", "").lower() in ("1", "true", "yes"),
+        help="Corpus mode: also store full input text (encrypted). Implies --telemetry-store-pii.",
+    )
+    parser.add_argument(
+        "--telemetry-corpus-include-responses",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_TELEMETRY_CORPUS_INCLUDE_RESPONSES", "").lower() in ("1", "true", "yes"),
+        help="Also store full response text. Implies --telemetry-corpus.",
+    )
+    parser.add_argument(
+        "--telemetry-init-key",
+        action="store_true",
+        help="Generate a fresh telemetry encryption key in the OS keyring and exit.",
+    )
     args = parser.parse_args()
+
+    if args.telemetry_init_key:
+        ensure_key_exists()
+        print("Telemetry encryption key stored in keyring (service=anon-proxy, user=telemetry).", file=sys.stderr)
+        print("Back up with: anon-proxy telemetry export-key", file=sys.stderr)
+        return
 
     # Parse extra upstreams
     extra_upstreams = {}
@@ -695,11 +798,14 @@ def main() -> None:
         )
 
     telemetry_observer = None
-    if args.telemetry:
+    if args.telemetry or args.telemetry_store_pii or args.telemetry_corpus or args.telemetry_corpus_include_responses:
         log_path = Path(args.telemetry_path) if args.telemetry_path else TELEMETRY_DEFAULT_PATH
-        telemetry_observer = TelemetryObserver(
-            detector=default_telemetry_detector(),
-            sink=JSONLWriter(log_path),
+        telemetry_observer = build_telemetry_observer(
+            store_pii=args.telemetry_store_pii,
+            corpus=args.telemetry_corpus,
+            include_responses=args.telemetry_corpus_include_responses,
+            raw_path=log_path,
+            detector_patterns_path=Path(args.patterns) if args.patterns else None,
             chunker=(pf.chunk_ranges if pf is not None else None),
         )
 
