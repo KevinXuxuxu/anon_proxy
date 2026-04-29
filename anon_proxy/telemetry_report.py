@@ -129,6 +129,41 @@ def _render(records: list[dict], path: Path) -> None:
         f"({pct(boundary_zone_hits):>4.0f}%)  (suggests chunking cost)"
     )
     print()
+
+    # --- Overlap events (v2 records only) ---
+    overlap_pairs: Counter[tuple[str, str, str]] = Counter()
+    for r in records:
+        for ev in r.get("overlap_events", []):
+            overlap_pairs[(ev["winner_source"], ev["loser_source"], ev["reason"])] += 1
+    if overlap_pairs:
+        print("Overlap events (winner ← loser, reason):")
+        for (w, l, reason), count in overlap_pairs.most_common():
+            print(f"  {w:>10s} ← {l:<10s}  {reason:<20s}  {count:>6,}")
+        print()
+
+    # --- Per-chunk distribution (v2 records only) ---
+    chunk_count = 0
+    chunk_ml = 0
+    chunk_baseline = 0
+    silent_chunks = 0  # chunks with baseline hits but zero ml hits
+    for r in records:
+        for c in r.get("chunks", []):
+            chunk_count += 1
+            chunk_ml += c.get("ml_spans", 0)
+            chunk_baseline += c.get("baseline_spans", 0)
+            if c.get("ml_spans", 0) == 0 and c.get("baseline_spans", 0) > 0:
+                silent_chunks += 1
+    if chunk_count:
+        print("Per-chunk distribution:")
+        print(f"  chunks total:                  {chunk_count:>6,}")
+        print(f"  avg ml spans/chunk:            {chunk_ml / chunk_count:>6.2f}")
+        print(f"  avg baseline spans/chunk:      {chunk_baseline / chunk_count:>6.2f}")
+        print(
+            f"  ml-silent chunks w/ baseline:  {silent_chunks:>6,} "
+            f"({100 * silent_chunks / chunk_count:>4.0f}%)"
+        )
+        print()
+
     print("Interpretation:")
     if isolated / miss_total > 0.5:
         print("  → Most misses are isolated (no ML span nearby). Points at clue-less PII")
