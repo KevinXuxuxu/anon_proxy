@@ -111,6 +111,7 @@ class _FakeObserver:
     def __init__(self, detector, chunker=None):
         self._detector = detector
         self._chunker = chunker
+        self._encryption_key = None
         self.records: list[dict] = []
 
     def baseline(self, text):
@@ -118,6 +119,12 @@ class _FakeObserver:
 
     def chunks(self, text):
         return self._chunker(text) if self._chunker else []
+
+    def stores_pii(self) -> bool:
+        return False
+
+    def stores_full_text(self) -> bool:
+        return False
 
     def _write(self, record):
         self.records.append(record)
@@ -439,7 +446,7 @@ def test_v2_record_has_schema_field(tmp_path: Path):
     )
     batch.commit()
     rec = json.loads(log.read_text().strip())
-    assert rec["schema"] == 2
+    assert rec["schema"] == 3
     assert "spans" in rec
     assert "overlap_events" in rec
     assert "chunks" in rec
@@ -623,3 +630,112 @@ def test_request_scope_isolated_per_masker(tmp_path: Path):
     # masker_a's scope committed → log_a should have one record
     assert log_a.exists()
     assert log_a.read_text().count("\n") == 1
+
+
+# ---------- v3 schema: CaptureMode + encrypted fields ----------
+
+
+import pytest
+
+from anon_proxy.crypto import decrypt_field, generate_key
+from anon_proxy.pipeline import AttributedSpan
+from anon_proxy.telemetry import CaptureMode
+
+
+class _NullRegexDetector:
+    def detect(self, text):
+        return []
+
+
+def _entity(label, start, end, text, score=0.9):
+    from anon_proxy.privacy_filter import PIIEntity
+    return PIIEntity(label=label, text=text, start=start, end=end, score=score)
+
+
+def test_v3_lean_mode_encrypts_entity_text_and_window():
+    key = generate_key()
+    sink = []
+    obs = TelemetryObserver(
+        detector=_NullRegexDetector(),
+        sink=sink.append,
+        chunker=None,
+        capture_mode=CaptureMode.LEAN,
+        encryption_key=key,
+    )
+    text = "Hello Alice Smith from 2026 — call her tomorrow."
+    ml = AttributedSpan(entity=_entity("PERSON", 6, 17, "Alice Smith"), source="ml")
+    with obs.new_batch() as batch:
+        batch.observe_v2(text=text, ml_spans=[ml], user_spans=[], kept=[ml], events=[])
+    rec = sink[-1]
+    assert rec["schema"] == 3
+    span = rec["spans"][0]
+    assert "enc_text" in span
+    assert "enc_window" in span
+    assert decrypt_field(span["enc_text"], key) == "Alice Smith"
+    window = decrypt_field(span["enc_window"], key)
+    assert "Alice Smith" in window
+    assert rec.get("enc_text") is None  # full text only in CORPUS mode
+
+
+def test_v3_zero_pii_mode_records_no_encrypted_fields():
+    sink = []
+    obs = TelemetryObserver(
+        detector=_NullRegexDetector(),
+        sink=sink.append,
+        capture_mode=CaptureMode.ZERO_PII,
+        encryption_key=None,
+    )
+    text = "Email me at alice@example.com please"
+    ml = AttributedSpan(entity=_entity("EMAIL", 12, 31, "alice@example.com"), source="ml")
+    with obs.new_batch() as batch:
+        batch.observe_v2(text=text, ml_spans=[ml], user_spans=[], kept=[ml], events=[])
+    rec = sink[-1]
+    span = rec["spans"][0]
+    assert "enc_text" not in span
+    assert "enc_window" not in span
+    assert rec.get("enc_text") is None
+
+
+def test_v3_corpus_mode_encrypts_full_text():
+    key = generate_key()
+    sink = []
+    obs = TelemetryObserver(
+        detector=_NullRegexDetector(),
+        sink=sink.append,
+        capture_mode=CaptureMode.CORPUS,
+        encryption_key=key,
+    )
+    text = "Long prompt with many sensitive details about Alice Smith and Bob Jones."
+    ml = AttributedSpan(entity=_entity("PERSON", 46, 57, "Alice Smith"), source="ml")
+    with obs.new_batch() as batch:
+        batch.observe_v2(text=text, ml_spans=[ml], user_spans=[], kept=[ml], events=[])
+    rec = sink[-1]
+    assert decrypt_field(rec["enc_text"], key) == text
+
+
+def test_v3_lean_mode_requires_key():
+    with pytest.raises(ValueError, match="encryption_key required"):
+        TelemetryObserver(
+            detector=_NullRegexDetector(),
+            sink=lambda r: None,
+            capture_mode=CaptureMode.LEAN,
+            encryption_key=None,
+        )
+
+
+def test_v3_corpus_mode_concatenates_multi_leaf_request():
+    """A single API request walks multiple text leaves; CORPUS captures all of them."""
+    key = generate_key()
+    sink = []
+    obs = TelemetryObserver(
+        detector=_NullRegexDetector(),
+        sink=sink.append,
+        capture_mode=CaptureMode.CORPUS,
+        encryption_key=key,
+    )
+    with obs.new_batch() as batch:
+        batch.observe_v2(text="Hello Alice", ml_spans=[], user_spans=[], kept=[], events=[])
+        batch.observe_v2(text="Goodbye Bob",  ml_spans=[], user_spans=[], kept=[], events=[])
+    rec = sink[-1]
+    decrypted = decrypt_field(rec["enc_text"], key)
+    assert "Hello Alice" in decrypted and "Goodbye Bob" in decrypted

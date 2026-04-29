@@ -25,8 +25,10 @@ import json
 import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
+from anon_proxy.crypto import encrypt_field
 from anon_proxy.pipeline import AttributedSpan, OverlapEvent
 from anon_proxy.privacy_filter import PIIEntity
 from anon_proxy.regex_detector import RegexDetector, load_patterns
@@ -36,6 +38,14 @@ DEFAULT_PATTERNS_PATH = Path(__file__).parent / "telemetry_patterns.json"
 DEFAULT_MAX_BYTES = 10_000_000
 NEARBY_CHARS = 50
 BOUNDARY_ZONE_CHARS = 50
+WINDOW_CHARS = 200
+
+
+class CaptureMode(Enum):
+    ZERO_PII = "zero_pii"
+    LEAN = "lean"
+    CORPUS = "corpus"
+    CORPUS_WITH_RESPONSES = "corpus_with_responses"
 
 ChunkFn = Callable[[str], list[tuple[int, int]]]
 
@@ -110,6 +120,8 @@ class TelemetryBatch:
         "_committed",
         "_latency_ms",
         "_owner",
+        "_raw_text_parts",
+        "_enc_full_text",
     )
 
     def __init__(self, observer: "TelemetryObserver") -> None:
@@ -123,6 +135,8 @@ class TelemetryBatch:
         self._committed: bool = False
         self._latency_ms: dict | None = None
         self._owner: object | None = None
+        self._raw_text_parts: list[str] = []
+        self._enc_full_text: str | None = None
 
     def observe(
         self,
@@ -184,9 +198,15 @@ class TelemetryBatch:
         baseline = _resolve_baseline_overlaps(self._observer.baseline(text))
         baseline_spans = [AttributedSpan(entity=e, source="baseline") for e in baseline]
 
+        stores_pii = self._observer.stores_pii()
+        text_for_enc = text if stores_pii else None
+        key_for_enc = self._observer._encryption_key if stores_pii else None
+
         kept_ids = {id(s) for s in kept}
         for s in ml_spans + user_spans:
-            self._spans.append(_span_record(s, kept=id(s) in kept_ids, events=events))
+            self._spans.append(
+                _span_record(s, kept=id(s) in kept_ids, events=events, text=text_for_enc, encryption_key=key_for_enc)
+            )
         detected_entities = [s.entity for s in ml_spans + user_spans]
         for bs in baseline_spans:
             self._spans.append({
@@ -219,15 +239,25 @@ class TelemetryBatch:
         self._req_chars += len(text)
         self._req_chunks += len(chunk_offsets) if chunk_offsets else 1
 
+        if self._observer.stores_full_text():
+            self._raw_text_parts.append(text)
+
     def commit(self) -> None:
         if self._committed:
             return
         self._committed = True
         if self._req_chars == 0 and not self._spans and not self._missed:
             return
+
+        if self._observer.stores_full_text() and self._raw_text_parts:
+            self._enc_full_text = encrypt_field(
+                "\n---\n".join(self._raw_text_parts),
+                self._observer._encryption_key,
+            )
+
         record = {
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "schema": 2,
+            "schema": 3,
             "req_chars": self._req_chars,
             "req_chunks": self._req_chunks,
             "spans": self._spans,
@@ -244,6 +274,7 @@ class TelemetryBatch:
                 for s in self._spans
                 if s["source"] == "user_regex" and s["kept"]
             ],
+            "enc_text": self._enc_full_text,
         }
         if self._latency_ms is not None:
             record["latency_ms"] = self._latency_ms
@@ -270,10 +301,23 @@ class TelemetryObserver:
         detector,
         sink: Callable[[dict], None],
         chunker: ChunkFn | None = None,
+        *,
+        capture_mode: CaptureMode = CaptureMode.ZERO_PII,
+        encryption_key: bytes | None = None,
     ) -> None:
+        if capture_mode != CaptureMode.ZERO_PII and encryption_key is None:
+            raise ValueError(f"encryption_key required for capture_mode={capture_mode.value}")
         self._detector = detector
         self._sink = sink
         self._chunker = chunker
+        self._capture_mode = capture_mode
+        self._encryption_key = encryption_key
+
+    def stores_pii(self) -> bool:
+        return self._capture_mode != CaptureMode.ZERO_PII
+
+    def stores_full_text(self) -> bool:
+        return self._capture_mode in (CaptureMode.CORPUS, CaptureMode.CORPUS_WITH_RESPONSES)
 
     def new_batch(self) -> TelemetryBatch:
         return TelemetryBatch(self)
@@ -315,8 +359,19 @@ class TelemetryObserver:
 # ---------- helpers ----------
 
 
-def _span_record(span: AttributedSpan, *, kept: bool, events: list[OverlapEvent]) -> dict:
-    """Build a v2 spans[] entry for an ml/user span (not baseline)."""
+def _span_record(
+    span: AttributedSpan,
+    *,
+    kept: bool,
+    events: list[OverlapEvent],
+    text: str | None = None,
+    encryption_key: bytes | None = None,
+) -> dict:
+    """Build a v3 spans[] entry for an ml/user span (not baseline).
+
+    When text and encryption_key are both provided (i.e. capture_mode != ZERO_PII),
+    enc_text (the entity substring) and enc_window (surrounding context) are added.
+    """
     rec: dict = {
         "label": span.label,
         "len": span.length,
@@ -327,18 +382,34 @@ def _span_record(span: AttributedSpan, *, kept: bool, events: list[OverlapEvent]
     # Check overlap events first — a span may be a winner (kept=True) or loser (kept=False).
     # Identity comparison (is) is safe because GreedyLongerWins.resolve doesn't copy spans;
     # OverlapEvent.winner / .loser refer to the same instances passed in via ml_spans/user_spans.
+    found = False
     for ev in events:
         if ev.loser is span:
             rec["lost_to"] = ev.winner.source
             rec["reason"] = ev.reason
-            return rec
+            found = True
+            break
         if ev.winner is span:
             rec["lost_to"] = None
             rec["reason"] = ev.reason
-            return rec
-    rec["lost_to"] = None
-    rec["reason"] = "no_overlap"
+            found = True
+            break
+    if not found:
+        rec["lost_to"] = None
+        rec["reason"] = "no_overlap"
+
+    if text is not None and encryption_key is not None:
+        entity_text = text[span.entity.start : span.entity.end]
+        rec["enc_text"] = encrypt_field(entity_text, encryption_key)
+        rec["enc_window"] = encrypt_field(_window_around(text, span, WINDOW_CHARS), encryption_key)
+
     return rec
+
+
+def _window_around(text: str, span: AttributedSpan, chars: int) -> str:
+    start = max(0, span.entity.start - chars)
+    end = min(len(text), span.entity.end + chars)
+    return text[start:end]
 
 
 def _chunk_meta(
