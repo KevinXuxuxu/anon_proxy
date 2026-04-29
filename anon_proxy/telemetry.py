@@ -299,13 +299,16 @@ def _span_record(span: AttributedSpan, *, kept: bool, events: list[OverlapEvent]
         "kept": kept,
         "score": round(span.entity.score, 4),
     }
-    if kept:
-        rec["lost_to"] = None
-        rec["reason"] = "no_overlap"
-        return rec
+    # Check overlap events first — a span may be a winner (kept=True) or loser (kept=False).
+    # Identity comparison (is) is safe because GreedyLongerWins.resolve doesn't copy spans;
+    # OverlapEvent.winner / .loser refer to the same instances passed in via ml_spans/user_spans.
     for ev in events:
         if ev.loser is span:
             rec["lost_to"] = ev.winner.source
+            rec["reason"] = ev.reason
+            return rec
+        if ev.winner is span:
+            rec["lost_to"] = None
             rec["reason"] = ev.reason
             return rec
     rec["lost_to"] = None

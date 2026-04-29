@@ -454,6 +454,9 @@ def test_v2_record_attributes_each_span(tmp_path: Path):
     assert sources == {"ml", "user_regex"}
     kept_flags = {(s["source"], s["kept"]) for s in rec["spans"] if s["source"] != "baseline"}
     assert kept_flags == {("ml", False), ("user_regex", True)}
+    span_by_source = {s["source"]: s for s in rec["spans"] if s["source"] != "baseline"}
+    assert span_by_source["user_regex"]["reason"] == "overlap_score_tie"  # kept winner
+    assert span_by_source["ml"]["reason"] == "overlap_score_tie"          # loser
     assert rec["overlap_events"] == [
         {
             "winner_source": "user_regex",
