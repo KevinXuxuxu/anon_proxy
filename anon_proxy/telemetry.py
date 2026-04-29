@@ -158,9 +158,10 @@ class TelemetryBatch:
         user_spans: list[AttributedSpan],
         kept: list[AttributedSpan],
         events: list[OverlapEvent],
+        side: str = "user",
     ) -> None:
         try:
-            self._accumulate(text, ml_spans, user_spans, kept, events)
+            self._accumulate(text, ml_spans, user_spans, kept, events, side=side)
         except Exception as exc:
             print(
                 f"anon_proxy telemetry: {type(exc).__name__}: {exc}",
@@ -193,6 +194,8 @@ class TelemetryBatch:
         user_spans: list[AttributedSpan],
         kept: list[AttributedSpan],
         events: list[OverlapEvent],
+        *,
+        side: str = "user",
     ) -> None:
         chunk_offsets = self._observer.chunks(text)
         baseline = _resolve_baseline_overlaps(self._observer.baseline(text))
@@ -205,7 +208,7 @@ class TelemetryBatch:
         kept_ids = {id(s) for s in kept}
         for s in ml_spans + user_spans:
             self._spans.append(
-                _span_record(s, kept=id(s) in kept_ids, events=events, text=text_for_enc, encryption_key=key_for_enc)
+                _span_record(s, kept=id(s) in kept_ids, events=events, text=text_for_enc, encryption_key=key_for_enc, side=side)
             )
         detected_entities = [s.entity for s in ml_spans + user_spans]
         for bs in baseline_spans:
@@ -366,11 +369,15 @@ def _span_record(
     events: list[OverlapEvent],
     text: str | None = None,
     encryption_key: bytes | None = None,
+    side: str = "user",
 ) -> dict:
     """Build a v3 spans[] entry for an ml/user span (not baseline).
 
     When text and encryption_key are both provided (i.e. capture_mode != ZERO_PII),
     enc_text (the entity substring) and enc_window (surrounding context) are added.
+
+    `side` is omitted from the record when it equals "user" (the default) to keep
+    records compact; it is only present for non-default values (e.g. "response").
     """
     rec: dict = {
         "label": span.label,
@@ -379,6 +386,8 @@ def _span_record(
         "kept": kept,
         "score": round(span.entity.score, 4),
     }
+    if side != "user":
+        rec["side"] = side
     # Check overlap events first — a span may be a winner (kept=True) or loser (kept=False).
     # Identity comparison (is) is safe because GreedyLongerWins.resolve doesn't copy spans;
     # OverlapEvent.winner / .loser refer to the same instances passed in via ml_spans/user_spans.

@@ -42,12 +42,17 @@ def mask_request(body: dict, masker: Masker) -> dict:
     return result
 
 
-def unmask_response(body: dict, masker: Masker) -> dict:
-    """Return a copy of a non-streaming Messages response with text unmasked."""
+def unmask_response(body: dict, masker: Masker, *, telemetry_batch=None, side: str = "response") -> dict:
+    """Return a copy of a non-streaming Messages response with text unmasked.
+
+    When `telemetry_batch` is provided, runs detectors on each text block before
+    unmasking and feeds the detected spans into the batch tagged with `side`.
+    This catches "leak-back" — raw PII the model emits that the outbound masker missed.
+    """
     result = dict(body)
     content = body.get("content")
     if isinstance(content, list):
-        result["content"] = [_unmask_block(b, masker) for b in content]
+        result["content"] = [_unmask_block(b, masker, telemetry_batch=telemetry_batch, side=side) for b in content]
     return result
 
 
@@ -83,18 +88,31 @@ def _mask_block(block, masker: Masker):
     return block
 
 
-def _unmask_block(block, masker: Masker):
+def _unmask_block(block, masker: Masker, *, telemetry_batch=None, side: str = "response"):
     if not isinstance(block, dict):
         return block
     btype = block.get("type")
     if btype == "text" and isinstance(block.get("text"), str):
-        return {**block, "text": masker.unmask(block["text"])}
+        text = block["text"]
+        if telemetry_batch is not None and text:
+            _observe_response(text, masker, telemetry_batch, side)
+        return {**block, "text": masker.unmask(text)}
     if btype == "tool_use":
         input_val = block.get("input")
         if isinstance(input_val, (dict, list)):
             return {**block, "input": _walk_strings(input_val, masker.unmask)}
         return block
     return block
+
+
+def _observe_response(text: str, masker: Masker, telemetry_batch, side: str) -> None:
+    """Run detectors on response text; feed spans into the batch tagged with side."""
+    ml_spans, user_spans = masker.detect_only(text)
+    kept = ml_spans + user_spans
+    telemetry_batch.observe_v2(
+        text=text, ml_spans=ml_spans, user_spans=user_spans, kept=kept, events=[],
+        side=side,
+    )
 
 
 def _walk_strings(value, transform):

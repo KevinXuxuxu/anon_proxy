@@ -72,6 +72,14 @@ class Masker:
     def telemetry(self) -> TelemetrySink | None:
         return self._telemetry
 
+    def detect_only(self, text: str) -> tuple[list[AttributedSpan], list[AttributedSpan]]:
+        """Return (ml_spans, user_spans) without resolving overlaps or replacing.
+
+        Used by adapters for response-side telemetry where we want detector
+        signal but do not want to mutate text or touch the PII store.
+        """
+        return self._detect_ml(text), self._detect_user(text)
+
     def mask(self, text: str) -> str:
         ml_spans = self._detect_ml(text)
         user_spans = self._detect_user(text)

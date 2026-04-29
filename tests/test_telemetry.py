@@ -739,3 +739,26 @@ def test_v3_corpus_mode_concatenates_multi_leaf_request():
     rec = sink[-1]
     decrypted = decrypt_field(rec["enc_text"], key)
     assert "Hello Alice" in decrypted and "Goodbye Bob" in decrypted
+
+
+# ---------- side field (Phase 5) ----------
+
+
+def test_v3_side_field_only_present_when_non_default():
+    sink = []
+    obs = TelemetryObserver(
+        detector=_NullRegexDetector(),
+        sink=sink.append,
+        capture_mode=CaptureMode.ZERO_PII,
+        encryption_key=None,
+    )
+    text = "Email me at alice@example.com"
+    ml = AttributedSpan(entity=_entity("EMAIL", 12, 29, "alice@example.com"), source="ml")
+    with obs.new_batch() as batch:
+        batch.observe_v2(text=text, ml_spans=[ml], user_spans=[], kept=[ml], events=[])  # default side
+        batch.observe_v2(text=text, ml_spans=[ml], user_spans=[], kept=[ml], events=[], side="response")
+    rec = sink[-1]
+    user_spans = [s for s in rec["spans"] if "side" not in s or s.get("side") == "user"]
+    response_spans = [s for s in rec["spans"] if s.get("side") == "response"]
+    assert len(user_spans) == 1 and "side" not in user_spans[0]
+    assert len(response_spans) == 1 and response_spans[0]["side"] == "response"
