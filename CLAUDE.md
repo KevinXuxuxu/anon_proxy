@@ -41,6 +41,10 @@ Key design invariants:
 - Proxy layer should not know about detector internals
 - Adapters isolate provider-specific protocol details (SSE parsing, message shape)
 
+The five-stage pipeline is documented in README.md → "Pipeline architecture".
+Type definitions and the resolve policy live in `anon_proxy/pipeline.py`.
+Offline P/R/F1 numbers against a labeled corpus: `python -m anon_proxy.eval`.
+
 ## Configuration
 
 Server flags (all have `ANON_PROXY_*` env var equivalents):

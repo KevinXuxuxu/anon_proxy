@@ -127,6 +127,63 @@ Copy from the `.example` files to get started.
 
 ---
 
+## Pipeline architecture
+
+`Masker.mask(text)` runs five named stages. The first three are detection
+passes; the fourth resolves overlaps; the fifth replaces. Pass 3 only runs
+when telemetry is enabled and never affects the masked output.
+
+```
+text
+ │
+ ├─[Pass 1] detect_ml ─────────────► ml_spans          (chunked ML inference)
+ ├─[Pass 2] detect_user ──────────► user_spans        (user RegexDetectors)
+ ├─[Pass 3] detect_baseline ──────► baseline_spans    (observer-only; --telemetry)
+ │
+ ▼
+[Pass 4] resolve  (greedy: longer wins; score breaks ties)
+ │
+ ▼
+[Pass 5] replace  (right-to-left token substitution)
+```
+
+| Concern | Lives in |
+|---|---|
+| Chunking (whitespace-bounded splitter) | `anon_proxy/privacy_filter.py:_split_chunks` (Pass 1 only) |
+| Same-label cross-chunk merge | `anon_proxy/privacy_filter.py:_merge_adjacent_entities` (inside Pass 1) |
+| User regex detectors | `anon_proxy/regex_detector.py` (Pass 2) |
+| Baseline regex (observer) | `anon_proxy/telemetry_patterns.json` (Pass 3) |
+| Range interaction policy | `anon_proxy/pipeline.py:GreedyLongerWins` (Pass 4) |
+
+User regex (Pass 2) and baseline regex (Pass 3) operate on the full text;
+chunking is purely a Pass 1 concern.
+
+When two spans overlap, the longer one wins; ties are broken by score.
+Touching spans (`prev.end == next.start`) are *not* overlapping. Regex
+detectors emit `score=1.0`, so on a length tie regex beats ML — most
+commonly relevant when a regex stitches two ML fragments.
+
+## Offline eval
+
+To get real precision/recall numbers against a labeled corpus:
+
+```bash
+# Bundled synthetic corpus (200 examples, seedable, zero real PII):
+uv run python -m anon_proxy.eval
+
+# OPF smoke test (5 samples from openai/privacy-filter, Apache 2.0):
+uv run python -m anon_proxy.eval --corpus anon_proxy/eval_corpus/opf_samples.jsonl
+
+# Bring your own labeled JSONL: {"text": "...", "spans": [{"label": ..., "start": ..., "end": ...}]}
+uv run python -m anon_proxy.eval --corpus path/to/yours.jsonl
+```
+
+Output: per-label P/R/F1/n for each requested detector. Note: the synthetic
+corpus's recall numbers reflect its template distribution, not your
+production traffic — see `--telemetry` for traffic-level evidence.
+
+---
+
 ## Telemetry (optional)
 
 The ML detector can silently miss PII — especially clue-less values like bare phone numbers or pasted tokens. To measure how often this happens *on your actual traffic*, run the proxy with `--telemetry`:
