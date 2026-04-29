@@ -405,7 +405,16 @@ def test_default_patterns_catch_common_shapes():
         assert expected_label in labels, f"expected {expected_label} in {labels} for: {text!r}"
 
 
+from anon_proxy.mapping import PIIStore
 from anon_proxy.pipeline import AttributedSpan, OverlapEvent
+
+
+class _DummyFilter:
+    def detect(self, text):
+        return []
+
+    def chunk_ranges(self, text):
+        return [(0, len(text))]
 
 
 def _aspan(label: str, start: int, end: int, source: str, score: float = 1.0) -> AttributedSpan:
@@ -517,3 +526,38 @@ def test_v2_no_pii_content_in_record(tmp_path: Path):
     blob = log.read_text()
     assert secret not in blob
     assert "hunter" not in blob
+
+
+# ---------- request_scope reentrancy (Task 1) ----------
+
+
+def test_request_scope_yields_batch(tmp_path: Path):
+    log = tmp_path / "tel.jsonl"
+    obs = TelemetryObserver(default_detector(), JSONLWriter(log))
+    masker = Masker(filter=_DummyFilter(), store=PIIStore(), telemetry=obs)
+    with masker.request_scope() as batch:
+        assert batch is not None
+        assert hasattr(batch, "commit")
+        assert hasattr(batch, "observe_v2")
+
+
+def test_request_scope_is_reentrant(tmp_path: Path):
+    """Nested scopes reuse the outer batch and don't commit early."""
+    log = tmp_path / "tel.jsonl"
+    obs = TelemetryObserver(default_detector(), JSONLWriter(log))
+    masker = Masker(filter=_DummyFilter(), store=PIIStore(), telemetry=obs)
+    with masker.request_scope() as outer:
+        with masker.request_scope() as inner:
+            assert inner is outer  # same batch instance
+            masker.mask("hello")
+        # After inner exits, the batch is NOT yet committed.
+        assert (not log.exists()) or (log.read_text() == "")
+    # Outer exit commits exactly once.
+    text = log.read_text()
+    assert text.count("\n") == 1
+
+
+def test_request_scope_without_telemetry_yields_none(tmp_path: Path):
+    masker = Masker(filter=_DummyFilter(), store=PIIStore(), telemetry=None)
+    with masker.request_scope() as batch:
+        assert batch is None

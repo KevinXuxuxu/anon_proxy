@@ -127,15 +127,27 @@ class Masker:
         )
 
     @contextmanager
-    def request_scope(self) -> Iterator[None]:
-        """Aggregate all mask() calls inside this scope into one telemetry record."""
+    def request_scope(self) -> Iterator["object | None"]:
+        """Aggregate all mask() calls inside this scope into one telemetry record.
+
+        Yields the active `TelemetryBatch` (or None when telemetry is disabled)
+        so callers can record extra fields (e.g. latency) before the batch
+        commits at scope exit.
+
+        Reentrant: a nested scope reuses the outer batch and does NOT commit
+        when it exits — only the outermost scope commits.
+        """
         if self._telemetry is None:
-            yield
+            yield None
+            return
+        existing = _current_batch.get()
+        if existing is not None:
+            yield existing
             return
         batch = self._telemetry.new_batch()
         token = _current_batch.set(batch)
         try:
-            yield
+            yield batch
         finally:
             _current_batch.reset(token)
             commit = getattr(batch, "commit", None)
