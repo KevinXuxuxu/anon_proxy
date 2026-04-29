@@ -108,6 +108,7 @@ class TelemetryBatch:
         "_req_chars",
         "_req_chunks",
         "_committed",
+        "_latency_ms",
     )
 
     def __init__(self, observer: "TelemetryObserver") -> None:
@@ -119,6 +120,7 @@ class TelemetryBatch:
         self._req_chars: int = 0
         self._req_chunks: int = 0
         self._committed: bool = False
+        self._latency_ms: dict | None = None
 
     def observe(
         self,
@@ -148,6 +150,25 @@ class TelemetryBatch:
                 f"anon_proxy telemetry: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
+
+    def record_latency(
+        self,
+        *,
+        mask_ms: int,
+        upstream_ms: int,
+        unmask_ms: int,
+        total_ms: int,
+    ) -> None:
+        """Record per-phase proxy latency. Last call wins; optional — records
+        without a record_latency call omit `latency_ms` from the committed
+        record entirely.
+        """
+        self._latency_ms = {
+            "mask": int(mask_ms),
+            "upstream": int(upstream_ms),
+            "unmask": int(unmask_ms),
+            "total": int(total_ms),
+        }
 
     def _accumulate(
         self,
@@ -222,6 +243,8 @@ class TelemetryBatch:
                 if s["source"] == "user_regex" and s["kept"]
             ],
         }
+        if self._latency_ms is not None:
+            record["latency_ms"] = self._latency_ms
         self._observer._write(record)
 
     def __enter__(self) -> "TelemetryBatch":

@@ -561,3 +561,40 @@ def test_request_scope_without_telemetry_yields_none(tmp_path: Path):
     masker = Masker(filter=_DummyFilter(), store=PIIStore(), telemetry=None)
     with masker.request_scope() as batch:
         assert batch is None
+
+
+# ---------- record_latency (Task 2) ----------
+
+
+def test_record_latency_appears_in_committed_record(tmp_path: Path):
+    log = tmp_path / "tel.jsonl"
+    obs = TelemetryObserver(default_detector(), JSONLWriter(log))
+    batch = obs.new_batch()
+    batch.observe_v2(text="hi", ml_spans=[], user_spans=[], kept=[], events=[])
+    batch.record_latency(mask_ms=3, upstream_ms=412, unmask_ms=2, total_ms=420)
+    batch.commit()
+    rec = json.loads(log.read_text().strip())
+    assert rec["latency_ms"] == {"mask": 3, "upstream": 412, "unmask": 2, "total": 420}
+
+
+def test_record_latency_optional(tmp_path: Path):
+    """Records without a record_latency call have no latency_ms key."""
+    log = tmp_path / "tel.jsonl"
+    obs = TelemetryObserver(default_detector(), JSONLWriter(log))
+    batch = obs.new_batch()
+    batch.observe_v2(text="hi", ml_spans=[], user_spans=[], kept=[], events=[])
+    batch.commit()
+    rec = json.loads(log.read_text().strip())
+    assert "latency_ms" not in rec
+
+
+def test_record_latency_last_call_wins(tmp_path: Path):
+    log = tmp_path / "tel.jsonl"
+    obs = TelemetryObserver(default_detector(), JSONLWriter(log))
+    batch = obs.new_batch()
+    batch.observe_v2(text="hi", ml_spans=[], user_spans=[], kept=[], events=[])
+    batch.record_latency(mask_ms=1, upstream_ms=1, unmask_ms=1, total_ms=3)
+    batch.record_latency(mask_ms=10, upstream_ms=20, unmask_ms=5, total_ms=35)
+    batch.commit()
+    rec = json.loads(log.read_text().strip())
+    assert rec["latency_ms"] == {"mask": 10, "upstream": 20, "unmask": 5, "total": 35}
