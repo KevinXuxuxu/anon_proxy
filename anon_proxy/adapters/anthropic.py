@@ -17,6 +17,7 @@ quotes/backslashes don't corrupt the stream.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator, Callable
 
 from anon_proxy.masker import Masker
@@ -30,6 +31,9 @@ def mask_request(body: dict, masker: Masker) -> dict:
     Only touches `messages[*].content` — user/assistant text, tool_use.input,
     and tool_result.content. The system prompt is left intact because it
     contains static tool definitions and instructions, not user data.
+
+    The proxy layer owns the telemetry `request_scope`; this function does
+    not open one. Callers outside the proxy can wrap their own scope.
     """
     result = dict(body)
     messages = body.get("messages")
@@ -38,12 +42,17 @@ def mask_request(body: dict, masker: Masker) -> dict:
     return result
 
 
-def unmask_response(body: dict, masker: Masker) -> dict:
-    """Return a copy of a non-streaming Messages response with text unmasked."""
+def unmask_response(body: dict, masker: Masker, *, telemetry_batch=None, side: str = "response") -> dict:
+    """Return a copy of a non-streaming Messages response with text unmasked.
+
+    When `telemetry_batch` is provided, runs detectors on each text block before
+    unmasking and feeds the detected spans into the batch tagged with `side`.
+    This catches "leak-back" — raw PII the model emits that the outbound masker missed.
+    """
     result = dict(body)
     content = body.get("content")
     if isinstance(content, list):
-        result["content"] = [_unmask_block(b, masker) for b in content]
+        result["content"] = [_unmask_block(b, masker, telemetry_batch=telemetry_batch, side=side) for b in content]
     return result
 
 
@@ -79,18 +88,31 @@ def _mask_block(block, masker: Masker):
     return block
 
 
-def _unmask_block(block, masker: Masker):
+def _unmask_block(block, masker: Masker, *, telemetry_batch=None, side: str = "response"):
     if not isinstance(block, dict):
         return block
     btype = block.get("type")
     if btype == "text" and isinstance(block.get("text"), str):
-        return {**block, "text": masker.unmask(block["text"])}
+        text = block["text"]
+        if telemetry_batch is not None and text:
+            _observe_response(text, masker, telemetry_batch, side)
+        return {**block, "text": masker.unmask(text)}
     if btype == "tool_use":
         input_val = block.get("input")
         if isinstance(input_val, (dict, list)):
             return {**block, "input": _walk_strings(input_val, masker.unmask)}
         return block
     return block
+
+
+def _observe_response(text: str, masker: Masker, telemetry_batch, side: str) -> None:
+    """Run detectors on response text; feed spans into the batch tagged with side."""
+    ml_spans, user_spans = masker.detect_only(text)
+    kept = ml_spans + user_spans
+    telemetry_batch.observe_v2(
+        text=text, ml_spans=ml_spans, user_spans=user_spans, kept=kept, events=[],
+        side=side,
+    )
 
 
 def _walk_strings(value, transform):
@@ -116,6 +138,8 @@ async def transform_stream(
     *,
     on_upstream_text: TextHook | None = None,
     on_client_text: TextHook | None = None,
+    on_unmask_us: Callable[[int], None] | None = None,
+    telemetry_batch=None,
 ) -> AsyncIterator[bytes]:
     """Unmask masked payloads in an Anthropic SSE stream.
 
@@ -130,7 +154,20 @@ async def transform_stream(
     `on_upstream_text` fires with each raw masked fragment as it arrives from
     upstream; `on_client_text` fires with each fragment emitted to the client
     (post-unmask). Both are optional hooks for debug/logging.
+    `on_unmask_us` fires with the microseconds spent on each unmask call;
+    the caller accumulates the total and converts to ms at commit time.
+    When `telemetry_batch` is provided, runs detectors on each completed text block
+    and feeds detected spans into the batch tagged as side="response".
     """
+
+    def _timed_unmask(value: str, *, json_ctx: bool) -> str:
+        if on_unmask_us is None:
+            return masker.unmask_json(value) if json_ctx else masker.unmask(value)
+        t = time.perf_counter()
+        out = masker.unmask_json(value) if json_ctx else masker.unmask(value)
+        on_unmask_us(int((time.perf_counter() - t) * 1_000_000))
+        return out
+
     blocks: dict[int, dict] = {}
     raw = b""
     async for chunk in upstream_bytes:
@@ -140,6 +177,7 @@ async def transform_stream(
             event_type, data_str = _parse_sse(event_bytes)
             for out_event, out_data in _transform_event(
                 event_type, data_str, masker, blocks, on_upstream_text, on_client_text,
+                _timed_unmask, telemetry_batch=telemetry_batch,
             ):
                 yield _serialize_sse(out_event, out_data)
     if raw.strip():
@@ -174,6 +212,9 @@ def _serialize_sse(event_type: str | None, data: str | None) -> bytes:
     return ("\n".join(lines) + "\n\n").encode("utf-8")
 
 
+_MAX_ASSEMBLED_BYTES = 100_000  # 100 KB per-block telemetry cap
+
+
 def _transform_event(
     event_type,
     data_str,
@@ -181,7 +222,16 @@ def _transform_event(
     blocks: dict[int, dict],
     on_upstream_text: TextHook | None,
     on_client_text: TextHook | None,
+    timed_unmask: Callable[[str, bool], str] | None = None,
+    *,
+    telemetry_batch=None,
 ):
+    # Use timed_unmask if provided, otherwise fall back to plain _unmask_for.
+    def _do_unmask(text: str, escape: bool) -> str:
+        if timed_unmask is not None:
+            return timed_unmask(text, json_ctx=escape)
+        return _unmask_for(masker, text, escape)
+
     if data_str is None:
         yield event_type, None
         return
@@ -196,12 +246,13 @@ def _transform_event(
         cb = data.get("content_block") or {}
         handler = _STREAM_HANDLERS.get(cb.get("type"))
         if handler:
-            blocks[idx] = {**handler, "buffer": ""}
+            # "assembled" tracks full upstream text for telemetry (text blocks only).
+            blocks[idx] = {**handler, "buffer": "", "assembled": ""}
             # tool_use may carry non-empty initial input — unmask it in place.
             if cb.get("type") == "tool_use":
                 input_val = cb.get("input")
                 if isinstance(input_val, (dict, list)) and input_val:
-                    new_cb = {**cb, "input": _walk_strings(input_val, masker.unmask)}
+                    new_cb = {**cb, "input": _walk_strings(input_val, lambda v: _do_unmask(v, False))}
                     yield event_type, json.dumps({**data, "content_block": new_cb})
                     return
         yield event_type, data_str
@@ -216,11 +267,16 @@ def _transform_event(
             piece = delta.get(field) or ""
             if on_upstream_text and piece:
                 on_upstream_text(piece)
+            # Accumulate full upstream text for response-side detection (text blocks only).
+            if state["field"] == "text" and piece:
+                cur = state["assembled"]
+                if len(cur) < _MAX_ASSEMBLED_BYTES:
+                    state["assembled"] = cur + piece
             buf = state["buffer"] + piece
             emittable, remainder = _split_emit(buf)
             state["buffer"] = remainder
             if emittable:
-                unmasked = _unmask_for(masker, emittable, state["escape"])
+                unmasked = _do_unmask(emittable, state["escape"])
                 if on_client_text:
                     on_client_text(unmasked)
                 new_data = {**data, "delta": {**delta, field: unmasked}}
@@ -233,7 +289,7 @@ def _transform_event(
         idx = data.get("index", 0)
         state = blocks.pop(idx, None)
         if state and state["buffer"]:
-            unmasked = _unmask_for(masker, state["buffer"], state["escape"])
+            unmasked = _do_unmask(state["buffer"], state["escape"])
             if on_client_text:
                 on_client_text(unmasked)
             flush = {
@@ -242,6 +298,15 @@ def _transform_event(
                 "delta": {"type": state["delta_type"], state["field"]: unmasked},
             }
             yield "content_block_delta", json.dumps(flush)
+        # Run response-side detector on the assembled text block (text blocks only).
+        if (
+            telemetry_batch is not None
+            and state is not None
+            and state["field"] == "text"
+        ):
+            assembled = state["assembled"]
+            if assembled:
+                _observe_response(assembled, masker, telemetry_batch, "response")
         yield event_type, json.dumps(data)
         return
 

@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import urljoin
 
 import httpx
@@ -28,9 +30,17 @@ from starlette.routing import Mount, Route
 
 from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.adapters import openai as openai_adapter
+from anon_proxy.crypto import KeyNotFoundError, ensure_key_exists, resolve_key
 from anon_proxy.masker import Masker
 from anon_proxy.privacy_filter import PrivacyFilter, load_merge_gap
 from anon_proxy.regex_detector import RegexDetector, load_patterns
+from anon_proxy.storage_paths import exclude_from_time_machine, is_under_sync_root, secure_create_dir
+from anon_proxy.telemetry import (
+    DEFAULT_PATH as TELEMETRY_DEFAULT_PATH,
+    CaptureMode,
+    TelemetryObserver,
+    default_detector as default_telemetry_detector,
+)
 from anon_proxy.upstream import BUILT_IN_UPSTREAMS, UpstreamConfig, get_upstream_config
 
 _DIM = "\033[2m"
@@ -282,92 +292,220 @@ async def _handle_proxy(
     if not should_mask:
         return await _passthrough(request, upstream_url, body_override=raw_body)
 
-    # Mask the request
-    store_before = len(masker.store)
-    masked = adapter.mask_request(body, masker)
-    if debug:
-        new_entries = masker.store.items()[store_before:]
-        _log_request(upstream_config.name, api_path, body, masked, new_entries)
+    # Mask the request — own the telemetry scope here so latency lands in the
+    # same record. Manual __enter__/__exit__ so the streaming path can hand
+    # the open scope off to body_iter.
+    t_start = time.perf_counter()
+    batch_cm = masker.request_scope()
+    batch = batch_cm.__enter__()
+    streaming_handed_off = False
+    try:
+        store_before = len(masker.store)
+        t_mask = time.perf_counter()
+        masked = adapter.mask_request(body, masker)
+        mask_ms = int((time.perf_counter() - t_mask) * 1000)
+        if debug:
+            new_entries = masker.store.items()[store_before:]
+            _log_request(upstream_config.name, api_path, body, masked, new_entries)
 
-    masked_bytes = json.dumps(masked).encode("utf-8")
-    upstream_headers = _forward_request_headers(request.headers)
-    params = dict(request.query_params)
+        masked_bytes = json.dumps(masked).encode("utf-8")
+        upstream_headers = _forward_request_headers(request.headers)
+        params = dict(request.query_params)
 
-    is_streaming = bool(_get_streaming_flag(body))
+        is_streaming = bool(_get_streaming_flag(body))
 
-    if is_streaming:
-        req = client.build_request(
-            request.method,
-            upstream_url,
-            content=masked_bytes,
-            headers=upstream_headers,
-            params=params,
-        )
-        upstream_resp = await client.send(req, stream=True)
-
-        if upstream_resp.status_code >= 400:
-            err_body = await upstream_resp.aread()
-            await upstream_resp.aclose()
-            return Response(
-                content=err_body,
-                status_code=upstream_resp.status_code,
-                headers=_filter_response_headers(upstream_resp.headers),
-                media_type=upstream_resp.headers.get("content-type"),
+        if is_streaming:
+            response = await _stream_response(
+                client=client,
+                masker=masker,
+                adapter=adapter,
+                method=request.method,
+                upstream_url=upstream_url,
+                masked_bytes=masked_bytes,
+                upstream_headers=upstream_headers,
+                params=params,
+                debug=debug,
+                batch=batch,
+                batch_cm=batch_cm,
+                t_start=t_start,
+                mask_ms=mask_ms,
             )
+            streaming_handed_off = True
+            return response
 
-        async def body_iter():
-            upstream_buf: list[str] = []
-            client_buf: list[str] = []
-            try:
-                async for out in adapter.transform_stream(
-                    upstream_resp.aiter_bytes(),
-                    masker,
-                    on_upstream_text=upstream_buf.append if debug else None,
-                    on_client_text=client_buf.append if debug else None,
-                ):
-                    yield out
-            finally:
-                if debug:
-                    _log_stream_summary("".join(upstream_buf), "".join(client_buf))
-                await upstream_resp.aclose()
-
-        return StreamingResponse(
-            body_iter(),
-            status_code=upstream_resp.status_code,
-            headers=_filter_response_headers(upstream_resp.headers),
-            media_type="text/event-stream",
+        return await _handle_non_streaming(
+            client=client,
+            masker=masker,
+            adapter=adapter,
+            method=request.method,
+            upstream_url=upstream_url,
+            masked_bytes=masked_bytes,
+            upstream_headers=upstream_headers,
+            params=params,
+            debug=debug,
+            batch=batch,
+            t_start=t_start,
+            mask_ms=mask_ms,
         )
+    finally:
+        if not streaming_handed_off:
+            batch_cm.__exit__(None, None, None)
 
-    # Non-streaming response
+
+async def _handle_non_streaming(
+    *,
+    client: httpx.AsyncClient,
+    masker: Masker,
+    adapter,
+    method: str,
+    upstream_url: str,
+    masked_bytes: bytes,
+    upstream_headers: dict,
+    params: dict,
+    debug: bool,
+    batch,
+    t_start: float,
+    mask_ms: int,
+) -> Response:
+    """Non-streaming branch: upstream call + unmask + record latency."""
+    t_upstream = time.perf_counter()
     upstream_resp = await client.request(
-        request.method,
-        upstream_url,
-        content=masked_bytes,
-        headers=upstream_headers,
-        params=params,
+        method, upstream_url, content=masked_bytes, headers=upstream_headers, params=params,
     )
+    upstream_ms = int((time.perf_counter() - t_upstream) * 1000)
     content_type = upstream_resp.headers.get("content-type", "")
+
+    response, unmask_ms = _build_unmasked_response(upstream_resp, content_type, masker, adapter, debug, batch=batch)
+
+    if batch is not None:
+        batch.record_latency(
+            mask_ms=mask_ms,
+            upstream_ms=upstream_ms,
+            unmask_ms=unmask_ms,
+            total_ms=int((time.perf_counter() - t_start) * 1000),
+        )
+    return response
+
+
+def _build_unmasked_response(
+    upstream_resp: httpx.Response,
+    content_type: str,
+    masker: Masker,
+    adapter,
+    debug: bool,
+    *,
+    batch=None,
+) -> tuple[Response, int]:
+    """Return (Response, unmask_ms). unmask_ms=0 when no unmask phase ran (non-JSON or 4xx/5xx)."""
     if content_type.startswith("application/json"):
         try:
             resp_json = upstream_resp.json()
         except ValueError:
             resp_json = None
         if resp_json is not None and upstream_resp.status_code < 400:
-            unmasked = adapter.unmask_response(resp_json, masker)
+            t_unmask = time.perf_counter()
+            unmasked = adapter.unmask_response(resp_json, masker, telemetry_batch=batch)
+            unmask_ms = int((time.perf_counter() - t_unmask) * 1000)
             if debug:
                 _log_response(resp_json, unmasked)
-            return Response(
-                content=json.dumps(unmasked),
-                status_code=upstream_resp.status_code,
-                headers=_filter_response_headers(upstream_resp.headers),
-                media_type="application/json",
+            return (
+                Response(
+                    content=json.dumps(unmasked),
+                    status_code=upstream_resp.status_code,
+                    headers=_filter_response_headers(upstream_resp.headers),
+                    media_type="application/json",
+                ),
+                unmask_ms,
             )
+    return (
+        Response(
+            content=upstream_resp.content,
+            status_code=upstream_resp.status_code,
+            headers=_filter_response_headers(upstream_resp.headers),
+            media_type=content_type or None,
+        ),
+        0,
+    )
 
-    return Response(
-        content=upstream_resp.content,
+
+async def _stream_response(
+    *,
+    client: httpx.AsyncClient,
+    masker: Masker,
+    adapter,
+    method: str,
+    upstream_url: str,
+    masked_bytes: bytes,
+    upstream_headers: dict,
+    params: dict,
+    debug: bool,
+    batch,
+    batch_cm,
+    t_start: float,
+    mask_ms: int,
+) -> Response:
+    """Streaming branch: records latency in body_iter's finally and exits the scope there."""
+    req = client.build_request(
+        method, upstream_url, content=masked_bytes, headers=upstream_headers, params=params,
+    )
+    t_upstream = time.perf_counter()
+    upstream_resp = await client.send(req, stream=True)
+
+    if upstream_resp.status_code >= 400:
+        err_body = await upstream_resp.aread()
+        await upstream_resp.aclose()
+        if batch is not None:
+            batch.record_latency(
+                mask_ms=mask_ms,
+                upstream_ms=int((time.perf_counter() - t_upstream) * 1000),
+                unmask_ms=0,
+                total_ms=int((time.perf_counter() - t_start) * 1000),
+            )
+        batch_cm.__exit__(None, None, None)
+        return Response(
+            content=err_body,
+            status_code=upstream_resp.status_code,
+            headers=_filter_response_headers(upstream_resp.headers),
+            media_type=upstream_resp.headers.get("content-type"),
+        )
+
+    async def body_iter():
+        upstream_buf: list[str] = []
+        client_buf: list[str] = []
+        unmask_us_total = 0
+
+        def acc_unmask_us(us: int) -> None:
+            nonlocal unmask_us_total
+            unmask_us_total += us
+
+        try:
+            async for out in adapter.transform_stream(
+                upstream_resp.aiter_bytes(),
+                masker,
+                on_upstream_text=upstream_buf.append if debug else None,
+                on_client_text=client_buf.append if debug else None,
+                on_unmask_us=acc_unmask_us,
+                telemetry_batch=batch,
+            ):
+                yield out
+        finally:
+            if debug:
+                _log_stream_summary("".join(upstream_buf), "".join(client_buf))
+            await upstream_resp.aclose()
+            if batch is not None:
+                batch.record_latency(
+                    mask_ms=mask_ms,
+                    upstream_ms=int((time.perf_counter() - t_upstream) * 1000),
+                    unmask_ms=unmask_us_total // 1000,
+                    total_ms=int((time.perf_counter() - t_start) * 1000),
+                )
+            batch_cm.__exit__(None, None, None)
+
+    return StreamingResponse(
+        body_iter(),
         status_code=upstream_resp.status_code,
         headers=_filter_response_headers(upstream_resp.headers),
-        media_type=content_type or None,
+        media_type="text/event-stream",
     )
 
 
@@ -460,7 +598,120 @@ def _parse_extra_upstream(spec: str) -> tuple[str, UpstreamConfig]:
     )
 
 
+def build_telemetry_observer(
+    *,
+    store_pii: bool,
+    corpus: bool,
+    include_responses: bool,
+    raw_path: Path,
+    detector_patterns_path: Path | None = None,
+    chunker=None,
+    ttl_days: int = 30,
+    size_mb: int = 50,
+) -> TelemetryObserver:
+    """Construct a TelemetryObserver for the requested capture mode.
+
+    Flag implication: include_responses → corpus → store_pii (each later
+    flag implies the earlier ones). Returns a TelemetryObserver wired with
+    the right writer, detector, and (when storing PII) the keyring key.
+
+    All modes use RawWriter (with TTL + size auto-purge) backed by MetricsWriter
+    so rollup data survives purge and TTL/size flags work uniformly. The
+    encryption_key is None for ZERO_PII mode — spans are stored without
+    encrypted entity text.
+
+    Raises SystemExit(2) if the user requested a PII-storing mode but no
+    encryption key is available. Refuse-to-start by design — we never
+    persist PII in cleartext.
+    """
+    from anon_proxy.retention import MetricsWriter, RawWriter, RetentionConfig
+
+    if include_responses:
+        mode = CaptureMode.CORPUS_WITH_RESPONSES
+    elif corpus:
+        mode = CaptureMode.CORPUS
+    elif store_pii:
+        mode = CaptureMode.LEAN
+    else:
+        mode = CaptureMode.ZERO_PII
+
+    key: bytes | None = None
+    if mode != CaptureMode.ZERO_PII:
+        try:
+            key = resolve_key()
+        except KeyNotFoundError as e:
+            print(f"anon-proxy: {e}", file=sys.stderr)
+            print(
+                "Run with --telemetry-init-key once to generate and store a key.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from e
+
+        sync_root = is_under_sync_root(raw_path)
+        if sync_root:
+            print(
+                f"anon-proxy WARNING: telemetry path is under '{sync_root}'. The encrypted "
+                f"blob will be replicated to that service. Consider --telemetry-path elsewhere.",
+                file=sys.stderr,
+            )
+        secure_create_dir(raw_path.parent)
+        if not exclude_from_time_machine(raw_path.parent):
+            if sys.platform == "darwin":
+                print(
+                    "anon-proxy: tmutil addexclusion failed; encrypted telemetry may end up in "
+                    "Time Machine backups.",
+                    file=sys.stderr,
+                )
+
+    cfg = RetentionConfig(
+        raw_dir=raw_path.parent,
+        ttl_days=ttl_days,
+        raw_size_mb=size_mb,
+    )
+    metrics = MetricsWriter(raw_path.parent)
+    raw_writer = RawWriter(cfg, metrics_writer=metrics)
+    sink = raw_writer.write
+
+    detector = (
+        default_telemetry_detector()
+        if detector_patterns_path is None
+        else RegexDetector(load_patterns(detector_patterns_path))
+    )
+    return TelemetryObserver(
+        detector=detector,
+        sink=sink,
+        chunker=chunker,
+        capture_mode=mode,
+        encryption_key=key,
+    )
+
+
+def _telemetry_health_line(raw_writer, metrics_writer) -> str:
+    raw_path = raw_writer.path
+    raw_lines = [l for l in raw_path.read_text().splitlines() if l.strip()] if raw_path.exists() else []
+    raw_size_mb = (raw_path.stat().st_size if raw_path.exists() else 0) / (1024 * 1024)
+    oldest = "—"
+    if raw_lines:
+        try:
+            oldest = json.loads(raw_lines[0])["ts"][:10]
+        except Exception:
+            oldest = "?"
+    corpus_path = raw_writer._cfg.corpus_path
+    corpus_lines = [l for l in corpus_path.read_text().splitlines() if l.strip()] if corpus_path.exists() else []
+    corpus_size_kb = (corpus_path.stat().st_size if corpus_path.exists() else 0) / 1024
+    return (
+        f"anon-proxy telemetry: {len(raw_lines)} raw records ({raw_size_mb:.1f} MB), "
+        f"oldest {oldest}. Corpus: {len(corpus_lines)} records ({corpus_size_kb:.0f} KB)."
+    )
+
+
 def main() -> None:
+    # Intercept `anon-proxy telemetry <subcmd>` before the proxy's own argparse.
+    if len(sys.argv) >= 2 and sys.argv[1] == "telemetry":
+        from anon_proxy.triage_cli import main as triage_main
+        triage_main(sys.argv[2:])
+        return
+
     import argparse
     import uvicorn
 
@@ -511,7 +762,61 @@ def main() -> None:
         help="Add an extra upstream provider. Repeatable. "
              "Example: --extra-upstream myprovider=https://api.example.com;adapter=openai",
     )
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_TELEMETRY", "").lower() in ("1", "true", "yes"),
+        help="Opt-in: write one JSON record per masked request to a local JSONL file "
+             f"(default: {TELEMETRY_DEFAULT_PATH}). Records carry labels, lengths, and "
+             "boundary flags only — never PII content.",
+    )
+    parser.add_argument(
+        "--telemetry-path",
+        default=os.environ.get("ANON_PROXY_TELEMETRY_PATH"),
+        help=f"Override the telemetry log path (default: {TELEMETRY_DEFAULT_PATH}).",
+    )
+    parser.add_argument(
+        "--telemetry-store-pii",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_TELEMETRY_STORE_PII", "").lower() in ("1", "true", "yes"),
+        help="Lean mode: encrypt and store entity text + ±200 char windows. Requires keyring or env-var key.",
+    )
+    parser.add_argument(
+        "--telemetry-corpus",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_TELEMETRY_CORPUS", "").lower() in ("1", "true", "yes"),
+        help="Corpus mode: also store full input text (encrypted). Implies --telemetry-store-pii.",
+    )
+    parser.add_argument(
+        "--telemetry-corpus-include-responses",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_TELEMETRY_CORPUS_INCLUDE_RESPONSES", "").lower() in ("1", "true", "yes"),
+        help="Also store full response text. Implies --telemetry-corpus.",
+    )
+    parser.add_argument(
+        "--telemetry-init-key",
+        action="store_true",
+        help="Generate a fresh telemetry encryption key in the OS keyring and exit.",
+    )
+    parser.add_argument(
+        "--telemetry-raw-ttl-days",
+        type=int,
+        default=int(os.environ.get("ANON_PROXY_TELEMETRY_RAW_TTL_DAYS", "30")),
+        help="Auto-purge raw records older than N days (default: 30).",
+    )
+    parser.add_argument(
+        "--telemetry-raw-size-mb",
+        type=int,
+        default=int(os.environ.get("ANON_PROXY_TELEMETRY_RAW_SIZE_MB", "50")),
+        help="Auto-purge raw records when file exceeds N MB (default: 50).",
+    )
     args = parser.parse_args()
+
+    if args.telemetry_init_key:
+        ensure_key_exists()
+        print("Telemetry encryption key stored in keyring (service=anon-proxy, user=telemetry).", file=sys.stderr)
+        print("Back up with: anon-proxy telemetry export-key", file=sys.stderr)
+        return
 
     # Parse extra upstreams
     extra_upstreams = {}
@@ -548,9 +853,28 @@ def main() -> None:
             device=device,
         )
 
+    telemetry_observer = None
+    if args.telemetry or args.telemetry_store_pii or args.telemetry_corpus or args.telemetry_corpus_include_responses:
+        log_path = Path(args.telemetry_path) if args.telemetry_path else TELEMETRY_DEFAULT_PATH
+        telemetry_observer = build_telemetry_observer(
+            store_pii=args.telemetry_store_pii,
+            corpus=args.telemetry_corpus,
+            include_responses=args.telemetry_corpus_include_responses,
+            raw_path=log_path,
+            detector_patterns_path=Path(args.patterns) if args.patterns else None,
+            chunker=(pf.chunk_ranges if pf is not None else None),
+            ttl_days=args.telemetry_raw_ttl_days,
+            size_mb=args.telemetry_raw_size_mb,
+        )
+        # Emit health line when using RawWriter (PII-storing modes)
+        from anon_proxy.retention import RawWriter
+        sink = telemetry_observer._sink
+        if callable(sink) and hasattr(sink, "__self__") and isinstance(sink.__self__, RawWriter):
+            print(_telemetry_health_line(sink.__self__, sink.__self__._metrics_writer), file=sys.stderr)
+
     masker = (
-        Masker(filter=pf, extra_detectors=extra_detectors)
-        if (pf is not None or extra_detectors)
+        Masker(filter=pf, extra_detectors=extra_detectors, telemetry=telemetry_observer)
+        if (pf is not None or extra_detectors or telemetry_observer is not None)
         else None
     )
 
@@ -558,6 +882,11 @@ def main() -> None:
 
     all_providers = sorted({**BUILT_IN_UPSTREAMS, **extra_upstreams}.keys())
     backend_display = f"{args.backend}" if args.backend != "auto" else "auto-detect"
+    telemetry_display = (
+        str(Path(args.telemetry_path) if args.telemetry_path else TELEMETRY_DEFAULT_PATH)
+        if args.telemetry
+        else "(off)"
+    )
     print(
         f"anon-proxy listening on http://{args.host}:{args.port}\n"
         f"  providers: {', '.join(all_providers)}\n"
@@ -565,6 +894,7 @@ def main() -> None:
         f"  patterns: {args.patterns or '(none)'}\n"
         f"  merge-gap-file: {args.merge_gap_file or '(defaults)'}\n"
         f"  backend: {backend_display}\n"
+        f"  telemetry: {telemetry_display}\n"
         f"\nUsage examples:\n"
         f"  Anthropic: base_url=http://{args.host}:{args.port}/anthropic\n"
         f"  OpenAI:   base_url=http://{args.host}:{args.port}/openai\n"

@@ -1,0 +1,200 @@
+{"text":"Dan Brown's phone is 555-867-5309; their email is bob.lee@corp.test.","spans":[{"label":"private_person","start":0,"end":9},{"label":"private_email","start":50,"end":67},{"label":"EMAIL","start":50,"end":67},{"label":"private_phone","start":21,"end":33},{"label":"PHONE_NANP","start":21,"end":33}]}
+{"text":"Please contact Bob Lee at +81 3-5555-1234.","spans":[{"label":"private_person","start":15,"end":22},{"label":"private_phone","start":26,"end":41},{"label":"PHONE_INTL","start":26,"end":41}]}
+{"text":"Please contact Alice Smith at 555-867-5309.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_phone","start":30,"end":42},{"label":"PHONE_NANP","start":30,"end":42}]}
+{"text":"Bob Lee's phone is +1-415-555-1234; their email is dan@brown.example.","spans":[{"label":"private_person","start":0,"end":7},{"label":"private_email","start":51,"end":68},{"label":"EMAIL","start":51,"end":68},{"label":"private_phone","start":19,"end":34},{"label":"PHONE_INTL","start":19,"end":34}]}
+{"text":"Alice Smith's phone is +44 20 7946 0958; their email is eve.park@uni.test.","spans":[{"label":"private_person","start":0,"end":11},{"label":"private_email","start":56,"end":73},{"label":"EMAIL","start":56,"end":73},{"label":"private_phone","start":23,"end":39},{"label":"PHONE_INTL","start":23,"end":39}]}
+{"text":"Send the report to bob.lee@corp.test by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Please contact Dan Brown at 212-555-9876.","spans":[{"label":"private_person","start":15,"end":24},{"label":"private_phone","start":28,"end":40},{"label":"PHONE_NANP","start":28,"end":40}]}
+{"text":"Please contact Alice Smith at 212-555-9876.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_phone","start":30,"end":42},{"label":"PHONE_NANP","start":30,"end":42}]}
+{"text":"Carol Diaz's phone is (415) 555-1234; their email is bob.lee@corp.test.","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_email","start":53,"end":70},{"label":"EMAIL","start":53,"end":70},{"label":"private_phone","start":22,"end":36},{"label":"PHONE_NANP","start":22,"end":36}]}
+{"text":"Eve Park's phone is +1-415-555-1234; their email is dan@brown.example.","spans":[{"label":"private_person","start":0,"end":8},{"label":"private_email","start":52,"end":69},{"label":"EMAIL","start":52,"end":69},{"label":"private_phone","start":20,"end":35},{"label":"PHONE_INTL","start":20,"end":35}]}
+{"text":"Please contact Bob Lee at (415) 555-1234.","spans":[{"label":"private_person","start":15,"end":22},{"label":"private_phone","start":26,"end":40},{"label":"PHONE_NANP","start":26,"end":40}]}
+{"text":"Hi, my name is Bob Lee. You can reach me at eve.park@uni.test.","spans":[{"label":"private_person","start":15,"end":22},{"label":"private_email","start":44,"end":61},{"label":"EMAIL","start":44,"end":61}]}
+{"text":"Hi, my name is Carol Diaz. You can reach me at bob.lee@corp.test.","spans":[{"label":"private_person","start":15,"end":25},{"label":"private_email","start":47,"end":64},{"label":"EMAIL","start":47,"end":64}]}
+{"text":"Send the report to carol_d@mail.invalid by tomorrow.","spans":[{"label":"private_email","start":19,"end":39},{"label":"EMAIL","start":19,"end":39}]}
+{"text":"Hi, my name is Carol Diaz. You can reach me at eve.park@uni.test.","spans":[{"label":"private_person","start":15,"end":25},{"label":"private_email","start":47,"end":64},{"label":"EMAIL","start":47,"end":64}]}
+{"text":"Please contact Eve Park at 800-555-0199.","spans":[{"label":"private_person","start":15,"end":23},{"label":"private_phone","start":27,"end":39},{"label":"PHONE_NANP","start":27,"end":39}]}
+{"text":"Eve Park's phone is 212-555-9876; their email is alice@example.com.","spans":[{"label":"private_person","start":0,"end":8},{"label":"private_email","start":49,"end":66},{"label":"EMAIL","start":49,"end":66},{"label":"private_phone","start":20,"end":32},{"label":"PHONE_NANP","start":20,"end":32}]}
+{"text":"Call me back at 555-867-5309 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":28},{"label":"PHONE_NANP","start":16,"end":28}]}
+{"text":"Please contact Bob Lee at +81 3-5555-1234.","spans":[{"label":"private_person","start":15,"end":22},{"label":"private_phone","start":26,"end":41},{"label":"PHONE_INTL","start":26,"end":41}]}
+{"text":"Call me back at +44 20 7946 0958 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":32},{"label":"PHONE_INTL","start":16,"end":32}]}
+{"text":"Eve Park's phone is 212-555-9876; their email is dan@brown.example.","spans":[{"label":"private_person","start":0,"end":8},{"label":"private_email","start":49,"end":66},{"label":"EMAIL","start":49,"end":66},{"label":"private_phone","start":20,"end":32},{"label":"PHONE_NANP","start":20,"end":32}]}
+{"text":"Please contact Alice Smith at 555-867-5309.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_phone","start":30,"end":42},{"label":"PHONE_NANP","start":30,"end":42}]}
+{"text":"Please contact Dan Brown at +44 20 7946 0958.","spans":[{"label":"private_person","start":15,"end":24},{"label":"private_phone","start":28,"end":44},{"label":"PHONE_INTL","start":28,"end":44}]}
+{"text":"Please contact Alice Smith at (415) 555-1234.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_phone","start":30,"end":44},{"label":"PHONE_NANP","start":30,"end":44}]}
+{"text":"Call me back at +1-415-555-1234 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":31},{"label":"PHONE_INTL","start":16,"end":31}]}
+{"text":"Dan Brown's phone is +44 20 7946 0958; their email is eve.park@uni.test.","spans":[{"label":"private_person","start":0,"end":9},{"label":"private_email","start":54,"end":71},{"label":"EMAIL","start":54,"end":71},{"label":"private_phone","start":21,"end":37},{"label":"PHONE_INTL","start":21,"end":37}]}
+{"text":"Eve Park's phone is 212-555-9876; their email is dan@brown.example.","spans":[{"label":"private_person","start":0,"end":8},{"label":"private_email","start":49,"end":66},{"label":"EMAIL","start":49,"end":66},{"label":"private_phone","start":20,"end":32},{"label":"PHONE_NANP","start":20,"end":32}]}
+{"text":"Please contact Carol Diaz at +81 3-5555-1234.","spans":[{"label":"private_person","start":15,"end":25},{"label":"private_phone","start":29,"end":44},{"label":"PHONE_INTL","start":29,"end":44}]}
+{"text":"Carol Diaz's phone is +81 3-5555-1234; their email is eve.park@uni.test.","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_email","start":54,"end":71},{"label":"EMAIL","start":54,"end":71},{"label":"private_phone","start":22,"end":37},{"label":"PHONE_INTL","start":22,"end":37}]}
+{"text":"Carol Diaz's phone is 555-867-5309; their email is eve.park@uni.test.","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_email","start":51,"end":68},{"label":"EMAIL","start":51,"end":68},{"label":"private_phone","start":22,"end":34},{"label":"PHONE_NANP","start":22,"end":34}]}
+{"text":"Bob Lee's phone is 212-555-9876; their email is alice@example.com.","spans":[{"label":"private_person","start":0,"end":7},{"label":"private_email","start":48,"end":65},{"label":"EMAIL","start":48,"end":65},{"label":"private_phone","start":19,"end":31},{"label":"PHONE_NANP","start":19,"end":31}]}
+{"text":"Send the report to dan@brown.example by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Send the report to carol_d@mail.invalid by tomorrow.","spans":[{"label":"private_email","start":19,"end":39},{"label":"EMAIL","start":19,"end":39}]}
+{"text":"Call me back at 800-555-0199 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":28},{"label":"PHONE_NANP","start":16,"end":28}]}
+{"text":"Call me back at 555-867-5309 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":28},{"label":"PHONE_NANP","start":16,"end":28}]}
+{"text":"Send the report to alice@example.com by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Send the report to bob.lee@corp.test by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Dan Brown's phone is +44 20 7946 0958; their email is bob.lee@corp.test.","spans":[{"label":"private_person","start":0,"end":9},{"label":"private_email","start":54,"end":71},{"label":"EMAIL","start":54,"end":71},{"label":"private_phone","start":21,"end":37},{"label":"PHONE_INTL","start":21,"end":37}]}
+{"text":"Hi, my name is Carol Diaz. You can reach me at eve.park@uni.test.","spans":[{"label":"private_person","start":15,"end":25},{"label":"private_email","start":47,"end":64},{"label":"EMAIL","start":47,"end":64}]}
+{"text":"Call me back at 212-555-9876 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":28},{"label":"PHONE_NANP","start":16,"end":28}]}
+{"text":"Please contact Carol Diaz at +44 20 7946 0958.","spans":[{"label":"private_person","start":15,"end":25},{"label":"private_phone","start":29,"end":45},{"label":"PHONE_INTL","start":29,"end":45}]}
+{"text":"Dan Brown's phone is +81 3-5555-1234; their email is eve.park@uni.test.","spans":[{"label":"private_person","start":0,"end":9},{"label":"private_email","start":53,"end":70},{"label":"EMAIL","start":53,"end":70},{"label":"private_phone","start":21,"end":36},{"label":"PHONE_INTL","start":21,"end":36}]}
+{"text":"Call me back at +81 3-5555-1234 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":31},{"label":"PHONE_INTL","start":16,"end":31}]}
+{"text":"Hi, my name is Alice Smith. You can reach me at carol_d@mail.invalid.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_email","start":48,"end":68},{"label":"EMAIL","start":48,"end":68}]}
+{"text":"Bob Lee's phone is 555-867-5309; their email is dan@brown.example.","spans":[{"label":"private_person","start":0,"end":7},{"label":"private_email","start":48,"end":65},{"label":"EMAIL","start":48,"end":65},{"label":"private_phone","start":19,"end":31},{"label":"PHONE_NANP","start":19,"end":31}]}
+{"text":"Please contact Dan Brown at +44 20 7946 0958.","spans":[{"label":"private_person","start":15,"end":24},{"label":"private_phone","start":28,"end":44},{"label":"PHONE_INTL","start":28,"end":44}]}
+{"text":"Please contact Bob Lee at +44 20 7946 0958.","spans":[{"label":"private_person","start":15,"end":22},{"label":"private_phone","start":26,"end":42},{"label":"PHONE_INTL","start":26,"end":42}]}
+{"text":"Call me back at (415) 555-1234 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":30},{"label":"PHONE_NANP","start":16,"end":30}]}
+{"text":"Please contact Bob Lee at +81 3-5555-1234.","spans":[{"label":"private_person","start":15,"end":22},{"label":"private_phone","start":26,"end":41},{"label":"PHONE_INTL","start":26,"end":41}]}
+{"text":"Send the report to alice@example.com by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Please contact Dan Brown at +44 20 7946 0958.","spans":[{"label":"private_person","start":15,"end":24},{"label":"private_phone","start":28,"end":44},{"label":"PHONE_INTL","start":28,"end":44}]}
+{"text":"Send the report to eve.park@uni.test by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Alice Smith's phone is 800-555-0199; their email is bob.lee@corp.test.","spans":[{"label":"private_person","start":0,"end":11},{"label":"private_email","start":52,"end":69},{"label":"EMAIL","start":52,"end":69},{"label":"private_phone","start":23,"end":35},{"label":"PHONE_NANP","start":23,"end":35}]}
+{"text":"Please contact Carol Diaz at 800-555-0199.","spans":[{"label":"private_person","start":15,"end":25},{"label":"private_phone","start":29,"end":41},{"label":"PHONE_NANP","start":29,"end":41}]}
+{"text":"Call me back at 212-555-9876 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":28},{"label":"PHONE_NANP","start":16,"end":28}]}
+{"text":"Send the report to carol_d@mail.invalid by tomorrow.","spans":[{"label":"private_email","start":19,"end":39},{"label":"EMAIL","start":19,"end":39}]}
+{"text":"Send the report to bob.lee@corp.test by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Please contact Bob Lee at +1-415-555-1234.","spans":[{"label":"private_person","start":15,"end":22},{"label":"private_phone","start":26,"end":41},{"label":"PHONE_INTL","start":26,"end":41}]}
+{"text":"Dan Brown's phone is (415) 555-1234; their email is dan@brown.example.","spans":[{"label":"private_person","start":0,"end":9},{"label":"private_email","start":52,"end":69},{"label":"EMAIL","start":52,"end":69},{"label":"private_phone","start":21,"end":35},{"label":"PHONE_NANP","start":21,"end":35}]}
+{"text":"Please contact Dan Brown at 800-555-0199.","spans":[{"label":"private_person","start":15,"end":24},{"label":"private_phone","start":28,"end":40},{"label":"PHONE_NANP","start":28,"end":40}]}
+{"text":"Send the report to alice@example.com by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Hi, my name is Dan Brown. You can reach me at alice@example.com.","spans":[{"label":"private_person","start":15,"end":24},{"label":"private_email","start":46,"end":63},{"label":"EMAIL","start":46,"end":63}]}
+{"text":"Call me back at 212-555-9876 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":28},{"label":"PHONE_NANP","start":16,"end":28}]}
+{"text":"Please contact Alice Smith at +44 20 7946 0958.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_phone","start":30,"end":46},{"label":"PHONE_INTL","start":30,"end":46}]}
+{"text":"Hi, my name is Alice Smith. You can reach me at alice@example.com.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_email","start":48,"end":65},{"label":"EMAIL","start":48,"end":65}]}
+{"text":"Hi, my name is Eve Park. You can reach me at carol_d@mail.invalid.","spans":[{"label":"private_person","start":15,"end":23},{"label":"private_email","start":45,"end":65},{"label":"EMAIL","start":45,"end":65}]}
+{"text":"Send the report to dan@brown.example by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Eve Park's phone is +81 3-5555-1234; their email is eve.park@uni.test.","spans":[{"label":"private_person","start":0,"end":8},{"label":"private_email","start":52,"end":69},{"label":"EMAIL","start":52,"end":69},{"label":"private_phone","start":20,"end":35},{"label":"PHONE_INTL","start":20,"end":35}]}
+{"text":"Carol Diaz's phone is +81 3-5555-1234; their email is carol_d@mail.invalid.","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_email","start":54,"end":74},{"label":"EMAIL","start":54,"end":74},{"label":"private_phone","start":22,"end":37},{"label":"PHONE_INTL","start":22,"end":37}]}
+{"text":"Carol Diaz's phone is +81 3-5555-1234; their email is alice@example.com.","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_email","start":54,"end":71},{"label":"EMAIL","start":54,"end":71},{"label":"private_phone","start":22,"end":37},{"label":"PHONE_INTL","start":22,"end":37}]}
+{"text":"Call me back at +44 20 7946 0958 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":32},{"label":"PHONE_INTL","start":16,"end":32}]}
+{"text":"Hi, my name is Alice Smith. You can reach me at bob.lee@corp.test.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_email","start":48,"end":65},{"label":"EMAIL","start":48,"end":65}]}
+{"text":"Please contact Dan Brown at 212-555-9876.","spans":[{"label":"private_person","start":15,"end":24},{"label":"private_phone","start":28,"end":40},{"label":"PHONE_NANP","start":28,"end":40}]}
+{"text":"Please contact Alice Smith at +44 20 7946 0958.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_phone","start":30,"end":46},{"label":"PHONE_INTL","start":30,"end":46}]}
+{"text":"Send the report to dan@brown.example by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Please contact Eve Park at 555-867-5309.","spans":[{"label":"private_person","start":15,"end":23},{"label":"private_phone","start":27,"end":39},{"label":"PHONE_NANP","start":27,"end":39}]}
+{"text":"Eve Park's phone is +81 3-5555-1234; their email is alice@example.com.","spans":[{"label":"private_person","start":0,"end":8},{"label":"private_email","start":52,"end":69},{"label":"EMAIL","start":52,"end":69},{"label":"private_phone","start":20,"end":35},{"label":"PHONE_INTL","start":20,"end":35}]}
+{"text":"Hi, my name is Dan Brown. You can reach me at carol_d@mail.invalid.","spans":[{"label":"private_person","start":15,"end":24},{"label":"private_email","start":46,"end":66},{"label":"EMAIL","start":46,"end":66}]}
+{"text":"Please contact Eve Park at 800-555-0199.","spans":[{"label":"private_person","start":15,"end":23},{"label":"private_phone","start":27,"end":39},{"label":"PHONE_NANP","start":27,"end":39}]}
+{"text":"Call me back at 212-555-9876 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":28},{"label":"PHONE_NANP","start":16,"end":28}]}
+{"text":"Hi, my name is Bob Lee. You can reach me at carol_d@mail.invalid.","spans":[{"label":"private_person","start":15,"end":22},{"label":"private_email","start":44,"end":64},{"label":"EMAIL","start":44,"end":64}]}
+{"text":"Send the report to bob.lee@corp.test by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Call me back at +1-415-555-1234 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":31},{"label":"PHONE_INTL","start":16,"end":31}]}
+{"text":"Call me back at +1-415-555-1234 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":31},{"label":"PHONE_INTL","start":16,"end":31}]}
+{"text":"Send the report to alice@example.com by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Call me back at 800-555-0199 when you get a chance.","spans":[{"label":"private_phone","start":16,"end":28},{"label":"PHONE_NANP","start":16,"end":28}]}
+{"text":"Please contact Carol Diaz at (415) 555-1234.","spans":[{"label":"private_person","start":15,"end":25},{"label":"private_phone","start":29,"end":43},{"label":"PHONE_NANP","start":29,"end":43}]}
+{"text":"Please contact Alice Smith at +81 3-5555-1234.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_phone","start":30,"end":45},{"label":"PHONE_INTL","start":30,"end":45}]}
+{"text":"Please contact Carol Diaz at (415) 555-1234.","spans":[{"label":"private_person","start":15,"end":25},{"label":"private_phone","start":29,"end":43},{"label":"PHONE_NANP","start":29,"end":43}]}
+{"text":"Hi, my name is Bob Lee. You can reach me at dan@brown.example.","spans":[{"label":"private_person","start":15,"end":22},{"label":"private_email","start":44,"end":61},{"label":"EMAIL","start":44,"end":61}]}
+{"text":"Please contact Dan Brown at 800-555-0199.","spans":[{"label":"private_person","start":15,"end":24},{"label":"private_phone","start":28,"end":40},{"label":"PHONE_NANP","start":28,"end":40}]}
+{"text":"Send the report to dan@brown.example by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Carol Diaz's phone is +81 3-5555-1234; their email is carol_d@mail.invalid.","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_email","start":54,"end":74},{"label":"EMAIL","start":54,"end":74},{"label":"private_phone","start":22,"end":37},{"label":"PHONE_INTL","start":22,"end":37}]}
+{"text":"Send the report to eve.park@uni.test by tomorrow.","spans":[{"label":"private_email","start":19,"end":36},{"label":"EMAIL","start":19,"end":36}]}
+{"text":"Alice Smith's phone is (415) 555-1234; their email is alice@example.com.","spans":[{"label":"private_person","start":0,"end":11},{"label":"private_email","start":54,"end":71},{"label":"EMAIL","start":54,"end":71},{"label":"private_phone","start":23,"end":37},{"label":"PHONE_NANP","start":23,"end":37}]}
+{"text":"Hi, my name is Eve Park. You can reach me at alice@example.com.","spans":[{"label":"private_person","start":15,"end":23},{"label":"private_email","start":45,"end":62},{"label":"EMAIL","start":45,"end":62}]}
+{"text":"Please contact Alice Smith at +1-415-555-1234.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_phone","start":30,"end":45},{"label":"PHONE_INTL","start":30,"end":45}]}
+{"text":"Hi, my name is Dan Brown. You can reach me at bob.lee@corp.test.","spans":[{"label":"private_person","start":15,"end":24},{"label":"private_email","start":46,"end":63},{"label":"EMAIL","start":46,"end":63}]}
+{"text":"Bob Lee's phone is 212-555-9876; their email is dan@brown.example.","spans":[{"label":"private_person","start":0,"end":7},{"label":"private_email","start":48,"end":65},{"label":"EMAIL","start":48,"end":65},{"label":"private_phone","start":19,"end":31},{"label":"PHONE_NANP","start":19,"end":31}]}
+{"text":"Hi, my name is Alice Smith. You can reach me at alice@example.com.","spans":[{"label":"private_person","start":15,"end":26},{"label":"private_email","start":48,"end":65},{"label":"EMAIL","start":48,"end":65}]}
+{"text":"Alice Smith, 800-555-0199","spans":[{"label":"private_person","start":0,"end":11},{"label":"private_phone","start":13,"end":25},{"label":"PHONE_NANP","start":13,"end":25}]}
+{"text":"Alice Smith, 555-867-5309","spans":[{"label":"private_person","start":0,"end":11},{"label":"private_phone","start":13,"end":25},{"label":"PHONE_NANP","start":13,"end":25}]}
+{"text":"from: carol_d@mail.invalid","spans":[{"label":"private_email","start":6,"end":26},{"label":"EMAIL","start":6,"end":26}]}
+{"text":"from: alice@example.com","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"+1-415-555-1234","spans":[{"label":"private_phone","start":0,"end":15},{"label":"PHONE_INTL","start":0,"end":15}]}
+{"text":"555-867-5309","spans":[{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"Bob Lee, (415) 555-1234","spans":[{"label":"private_person","start":0,"end":7},{"label":"private_phone","start":9,"end":23},{"label":"PHONE_NANP","start":9,"end":23}]}
+{"text":"Carol Diaz, (415) 555-1234","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_phone","start":12,"end":26},{"label":"PHONE_NANP","start":12,"end":26}]}
+{"text":"(415) 555-1234\nalice@example.com","spans":[{"label":"private_email","start":15,"end":32},{"label":"EMAIL","start":15,"end":32},{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"(415) 555-1234\neve.park@uni.test","spans":[{"label":"private_email","start":15,"end":32},{"label":"EMAIL","start":15,"end":32},{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"800-555-0199\nbob.lee@corp.test","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"800-555-0199\nalice@example.com","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"alice@example.com","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"+44 20 7946 0958","spans":[{"label":"private_phone","start":0,"end":16},{"label":"PHONE_INTL","start":0,"end":16}]}
+{"text":"Dan Brown, 555-867-5309","spans":[{"label":"private_person","start":0,"end":9},{"label":"private_phone","start":11,"end":23},{"label":"PHONE_NANP","start":11,"end":23}]}
+{"text":"+1-415-555-1234","spans":[{"label":"private_phone","start":0,"end":15},{"label":"PHONE_INTL","start":0,"end":15}]}
+{"text":"212-555-9876\nalice@example.com","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"(415) 555-1234\nalice@example.com","spans":[{"label":"private_email","start":15,"end":32},{"label":"EMAIL","start":15,"end":32},{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"212-555-9876\ndan@brown.example","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"alice@example.com","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"800-555-0199\nbob.lee@corp.test","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"(415) 555-1234","spans":[{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"+44 20 7946 0958\nalice@example.com","spans":[{"label":"private_email","start":17,"end":34},{"label":"EMAIL","start":17,"end":34},{"label":"private_phone","start":0,"end":16},{"label":"PHONE_INTL","start":0,"end":16}]}
+{"text":"alice@example.com","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"from: carol_d@mail.invalid","spans":[{"label":"private_email","start":6,"end":26},{"label":"EMAIL","start":6,"end":26}]}
+{"text":"alice@example.com","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"from: bob.lee@corp.test","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"Carol Diaz, +44 20 7946 0958","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_phone","start":12,"end":28},{"label":"PHONE_INTL","start":12,"end":28}]}
+{"text":"eve.park@uni.test","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"from: carol_d@mail.invalid","spans":[{"label":"private_email","start":6,"end":26},{"label":"EMAIL","start":6,"end":26}]}
+{"text":"Bob Lee, +81 3-5555-1234","spans":[{"label":"private_person","start":0,"end":7},{"label":"private_phone","start":9,"end":24},{"label":"PHONE_INTL","start":9,"end":24}]}
+{"text":"800-555-0199","spans":[{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"from: alice@example.com","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"carol_d@mail.invalid","spans":[{"label":"private_email","start":0,"end":20},{"label":"EMAIL","start":0,"end":20}]}
+{"text":"bob.lee@corp.test","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"+81 3-5555-1234","spans":[{"label":"private_phone","start":0,"end":15},{"label":"PHONE_INTL","start":0,"end":15}]}
+{"text":"(415) 555-1234","spans":[{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"Carol Diaz, +44 20 7946 0958","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_phone","start":12,"end":28},{"label":"PHONE_INTL","start":12,"end":28}]}
+{"text":"+81 3-5555-1234","spans":[{"label":"private_phone","start":0,"end":15},{"label":"PHONE_INTL","start":0,"end":15}]}
+{"text":"Carol Diaz, 555-867-5309","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_phone","start":12,"end":24},{"label":"PHONE_NANP","start":12,"end":24}]}
+{"text":"Alice Smith, +81 3-5555-1234","spans":[{"label":"private_person","start":0,"end":11},{"label":"private_phone","start":13,"end":28},{"label":"PHONE_INTL","start":13,"end":28}]}
+{"text":"Eve Park, +1-415-555-1234","spans":[{"label":"private_person","start":0,"end":8},{"label":"private_phone","start":10,"end":25},{"label":"PHONE_INTL","start":10,"end":25}]}
+{"text":"555-867-5309","spans":[{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"Alice Smith, (415) 555-1234","spans":[{"label":"private_person","start":0,"end":11},{"label":"private_phone","start":13,"end":27},{"label":"PHONE_NANP","start":13,"end":27}]}
+{"text":"+1-415-555-1234\ndan@brown.example","spans":[{"label":"private_email","start":16,"end":33},{"label":"EMAIL","start":16,"end":33},{"label":"private_phone","start":0,"end":15},{"label":"PHONE_INTL","start":0,"end":15}]}
+{"text":"from: eve.park@uni.test","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"from: dan@brown.example","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"555-867-5309\nalice@example.com","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"(415) 555-1234\ncarol_d@mail.invalid","spans":[{"label":"private_email","start":15,"end":35},{"label":"EMAIL","start":15,"end":35},{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"Eve Park, +1-415-555-1234","spans":[{"label":"private_person","start":0,"end":8},{"label":"private_phone","start":10,"end":25},{"label":"PHONE_INTL","start":10,"end":25}]}
+{"text":"+44 20 7946 0958\ncarol_d@mail.invalid","spans":[{"label":"private_email","start":17,"end":37},{"label":"EMAIL","start":17,"end":37},{"label":"private_phone","start":0,"end":16},{"label":"PHONE_INTL","start":0,"end":16}]}
+{"text":"(415) 555-1234\nalice@example.com","spans":[{"label":"private_email","start":15,"end":32},{"label":"EMAIL","start":15,"end":32},{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"from: eve.park@uni.test","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"800-555-0199\nalice@example.com","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"(415) 555-1234","spans":[{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"dan@brown.example","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"dan@brown.example","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"Bob Lee, +81 3-5555-1234","spans":[{"label":"private_person","start":0,"end":7},{"label":"private_phone","start":9,"end":24},{"label":"PHONE_INTL","start":9,"end":24}]}
+{"text":"800-555-0199","spans":[{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"bob.lee@corp.test","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"eve.park@uni.test","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"from: bob.lee@corp.test","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"+1-415-555-1234","spans":[{"label":"private_phone","start":0,"end":15},{"label":"PHONE_INTL","start":0,"end":15}]}
+{"text":"Carol Diaz, +81 3-5555-1234","spans":[{"label":"private_person","start":0,"end":10},{"label":"private_phone","start":12,"end":27},{"label":"PHONE_INTL","start":12,"end":27}]}
+{"text":"Bob Lee, 555-867-5309","spans":[{"label":"private_person","start":0,"end":7},{"label":"private_phone","start":9,"end":21},{"label":"PHONE_NANP","start":9,"end":21}]}
+{"text":"(415) 555-1234","spans":[{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"from: carol_d@mail.invalid","spans":[{"label":"private_email","start":6,"end":26},{"label":"EMAIL","start":6,"end":26}]}
+{"text":"800-555-0199\neve.park@uni.test","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"+1-415-555-1234\neve.park@uni.test","spans":[{"label":"private_email","start":16,"end":33},{"label":"EMAIL","start":16,"end":33},{"label":"private_phone","start":0,"end":15},{"label":"PHONE_INTL","start":0,"end":15}]}
+{"text":"alice@example.com","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"Eve Park, 800-555-0199","spans":[{"label":"private_person","start":0,"end":8},{"label":"private_phone","start":10,"end":22},{"label":"PHONE_NANP","start":10,"end":22}]}
+{"text":"+44 20 7946 0958","spans":[{"label":"private_phone","start":0,"end":16},{"label":"PHONE_INTL","start":0,"end":16}]}
+{"text":"+44 20 7946 0958\nalice@example.com","spans":[{"label":"private_email","start":17,"end":34},{"label":"EMAIL","start":17,"end":34},{"label":"private_phone","start":0,"end":16},{"label":"PHONE_INTL","start":0,"end":16}]}
+{"text":"212-555-9876","spans":[{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"(415) 555-1234\neve.park@uni.test","spans":[{"label":"private_email","start":15,"end":32},{"label":"EMAIL","start":15,"end":32},{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"eve.park@uni.test","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"bob.lee@corp.test","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"eve.park@uni.test","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"Alice Smith, 212-555-9876","spans":[{"label":"private_person","start":0,"end":11},{"label":"private_phone","start":13,"end":25},{"label":"PHONE_NANP","start":13,"end":25}]}
+{"text":"555-867-5309\ndan@brown.example","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"+1-415-555-1234\nbob.lee@corp.test","spans":[{"label":"private_email","start":16,"end":33},{"label":"EMAIL","start":16,"end":33},{"label":"private_phone","start":0,"end":15},{"label":"PHONE_INTL","start":0,"end":15}]}
+{"text":"from: dan@brown.example","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"bob.lee@corp.test","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"+44 20 7946 0958\ndan@brown.example","spans":[{"label":"private_email","start":17,"end":34},{"label":"EMAIL","start":17,"end":34},{"label":"private_phone","start":0,"end":16},{"label":"PHONE_INTL","start":0,"end":16}]}
+{"text":"alice@example.com","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"Dan Brown, +44 20 7946 0958","spans":[{"label":"private_person","start":0,"end":9},{"label":"private_phone","start":11,"end":27},{"label":"PHONE_INTL","start":11,"end":27}]}
+{"text":"bob.lee@corp.test","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"Eve Park, +81 3-5555-1234","spans":[{"label":"private_person","start":0,"end":8},{"label":"private_phone","start":10,"end":25},{"label":"PHONE_INTL","start":10,"end":25}]}
+{"text":"dan@brown.example","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"Bob Lee, +81 3-5555-1234","spans":[{"label":"private_person","start":0,"end":7},{"label":"private_phone","start":9,"end":24},{"label":"PHONE_INTL","start":9,"end":24}]}
+{"text":"from: dan@brown.example","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"+81 3-5555-1234\nalice@example.com","spans":[{"label":"private_email","start":16,"end":33},{"label":"EMAIL","start":16,"end":33},{"label":"private_phone","start":0,"end":15},{"label":"PHONE_INTL","start":0,"end":15}]}
+{"text":"dan@brown.example","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"from: dan@brown.example","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"from: alice@example.com","spans":[{"label":"private_email","start":6,"end":23},{"label":"EMAIL","start":6,"end":23}]}
+{"text":"(415) 555-1234\ncarol_d@mail.invalid","spans":[{"label":"private_email","start":15,"end":35},{"label":"EMAIL","start":15,"end":35},{"label":"private_phone","start":0,"end":14},{"label":"PHONE_NANP","start":0,"end":14}]}
+{"text":"Dan Brown, +1-415-555-1234","spans":[{"label":"private_person","start":0,"end":9},{"label":"private_phone","start":11,"end":26},{"label":"PHONE_INTL","start":11,"end":26}]}
+{"text":"eve.park@uni.test","spans":[{"label":"private_email","start":0,"end":17},{"label":"EMAIL","start":0,"end":17}]}
+{"text":"555-867-5309\nbob.lee@corp.test","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}
+{"text":"555-867-5309\nbob.lee@corp.test","spans":[{"label":"private_email","start":13,"end":30},{"label":"EMAIL","start":13,"end":30},{"label":"private_phone","start":0,"end":12},{"label":"PHONE_NANP","start":0,"end":12}]}

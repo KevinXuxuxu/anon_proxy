@@ -86,6 +86,10 @@ uv run python -m anon_proxy.server [options]
 | `--patterns <file>` | — | JSON file of extra regex detectors: `{"LABEL": "regex", ...}` |
 | `--merge-gap-file <file>` | — | JSON file overriding per-label adjacency merge chars (see `merge_gap.json.example`) |
 | `--chunk-size <N>` | `1500` | Max chars per model inference pass — lower values reduce peak VRAM |
+| `--telemetry` | off | Log one JSON record per masked request to a local JSONL file (no PII content) |
+| `--telemetry-path <file>` | `~/.anon-proxy/telemetry.jsonl` | Override telemetry log path |
+
+All flags have `ANON_PROXY_*` env-var equivalents (`ANON_PROXY_HOST`, `ANON_PROXY_PORT`, `ANON_PROXY_DEBUG=1`, `ANON_PROXY_PATTERNS`, `ANON_PROXY_MERGE_GAP`, `ANON_PROXY_CHUNK_SIZE`, `ANON_PROXY_BACKEND`, `ANON_PROXY_TELEMETRY=1`, `ANON_PROXY_TELEMETRY_PATH`).
 
 **Add a custom provider:**
 ```bash
@@ -183,6 +187,187 @@ With `--debug`, each request prints a compact diff to stderr:
 | `merge_gap.json` | Per-label chars allowed inside a gap when merging adjacent spans (e.g. hyphen for `PERSON` so "Jean-Luc" → one token) |
 
 Copy from the `.example` files to get started.
+
+---
+
+## Pipeline architecture
+
+`Masker.mask(text)` runs five named stages. The first three are detection
+passes; the fourth resolves overlaps; the fifth replaces. Pass 3 only runs
+when telemetry is enabled and never affects the masked output.
+
+```
+text
+ │
+ ├─[Pass 1] detect_ml ─────────────► ml_spans          (chunked ML inference)
+ ├─[Pass 2] detect_user ──────────► user_spans        (user RegexDetectors)
+ ├─[Pass 3] detect_baseline ──────► baseline_spans    (observer-only; --telemetry)
+ │
+ ▼
+[Pass 4] resolve  (greedy: longer wins; score breaks ties)
+ │
+ ▼
+[Pass 5] replace  (right-to-left token substitution)
+```
+
+| Concern | Lives in |
+|---|---|
+| Chunking (whitespace-bounded splitter) | `anon_proxy/privacy_filter.py:_split_chunks` (Pass 1 only) |
+| Same-label cross-chunk merge | `anon_proxy/privacy_filter.py:_merge_adjacent_entities` (inside Pass 1) |
+| User regex detectors | `anon_proxy/regex_detector.py` (Pass 2) |
+| Baseline regex (observer) | `anon_proxy/telemetry_patterns.json` (Pass 3) |
+| Range interaction policy | `anon_proxy/pipeline.py:GreedyLongerWins` (Pass 4) |
+
+User regex (Pass 2) and baseline regex (Pass 3) operate on the full text;
+chunking is purely a Pass 1 concern.
+
+When two spans overlap, the longer one wins; ties are broken by score.
+Touching spans (`prev.end == next.start`) are *not* overlapping. Regex
+detectors emit `score=1.0`, so on a length tie regex beats ML — most
+commonly relevant when a regex stitches two ML fragments.
+
+## Offline eval
+
+To get real precision/recall numbers against a labeled corpus:
+
+```bash
+# Bundled synthetic corpus (200 examples, seedable, zero real PII):
+uv run python -m anon_proxy.eval
+
+# OPF smoke test (5 samples from openai/privacy-filter, Apache 2.0):
+uv run python -m anon_proxy.eval --corpus anon_proxy/eval_corpus/opf_samples.jsonl
+
+# Bring your own labeled JSONL: {"text": "...", "spans": [{"label": ..., "start": ..., "end": ...}]}
+uv run python -m anon_proxy.eval --corpus path/to/yours.jsonl
+```
+
+Output: per-label P/R/F1/n for each requested detector. Note: the synthetic
+corpus's recall numbers reflect its template distribution, not your
+production traffic — see `--telemetry` for traffic-level evidence.
+
+---
+
+## Telemetry (optional)
+
+The ML detector can silently miss PII — especially clue-less values like bare phone numbers or pasted tokens. To measure how often this happens *on your actual traffic*, run the proxy with `--telemetry`:
+
+```bash
+uv run python -m anon_proxy.server --telemetry
+```
+
+One JSON record **per API request** is appended to `~/.anon-proxy/telemetry.jsonl`. The record aggregates every `Masker.mask()` call the Anthropic adapter made while handling that `POST /v1/messages` — all text blocks, all tool-use inputs, all tool results — into a single line. Records contain labels, lengths, and boundary flags only — never the original PII value, never a slice of the request text. A built-in conservative regex set (email / phone / SSN / IPv4 / IPv6) is run alongside the ML detector and flags any span the model missed.
+
+After a day or two of normal use, summarize the log:
+
+```bash
+uv run python -m anon_proxy.telemetry_report
+```
+
+```
+2,147 API requests
+  avg request:   1,843 chars, 1.40 chunks (312 multi-chunk, 15%)
+
+ML detector: 8,412 spans
+  private_person  4,281
+  private_email   2,104
+  ...
+
+Baseline regex caught but detectors missed: 47 spans
+  PHONE_NANP   41
+  EMAIL         3
+  SSN          18
+
+Miss characterization:
+  no detector span within 50ch (isolated):   42 ( 89%)
+  nearest detector span same label:           2 (  4%)  (suggests fragmentation)
+  within 50ch of a real chunk boundary:       3 (  6%)  (suggests chunking cost)
+```
+
+Interpretation:
+- **Mostly "isolated" misses** → clue-less PII is the dominant failure mode; consider promoting the regex detectors to real maskers via `--patterns`.
+- **Many "same-label nearby" misses** → the model fragmented a span and merge-gap didn't stitch it; adjust `--merge-gap-file`.
+- **Many "near real chunk boundary" misses** → chunk boundaries are stripping context; raise `--chunk-size`.
+
+### Latency (`latency_ms` field)
+
+When the proxy serves a request, each v2 record also carries:
+
+```json
+"latency_ms": {"mask": 3, "upstream": 412, "unmask": 2, "total": 420}
+```
+
+- `mask` — milliseconds spent in `Masker.mask` for the request (Pass 1–4 of the
+  pipeline plus token replacement).
+- `upstream` — time from request-sent to upstream-response-complete. For
+  streaming responses this includes the full stream duration.
+- `unmask` — time spent unmasking. Non-streaming: a single pass. Streaming:
+  cumulative across all chunks (microseconds summed inside `transform_stream`,
+  truncated to ms on commit).
+- `total` — end-to-end proxy latency (request received → response complete).
+
+For streaming requests `mask + upstream + unmask` will not equal `total`
+because mask runs before upstream and unmask is interleaved with upstream.
+
+`python -m anon_proxy.telemetry_report` prints per-phase p50/p95 across all
+logged requests.
+
+If you want stricter regex coverage (e.g. international phone formats), pass your own via `--patterns` — user regexes count as "caught" in telemetry, so the log shows you what's *still* leaking after every configured layer runs.
+
+## Local PII telemetry (opt-in)
+
+By default, telemetry records labels and lengths only — no raw PII content.
+With `--telemetry-store-pii`, anon-proxy can also encrypt and store the
+detected entity text + a ±200 character context window per span, keyed on
+your OS keyring. This unlocks:
+
+- **Triage** false positives and false negatives in your own terminal.
+- **Build** a labeled benchmark corpus that lives across detector versions.
+- **Catch leak-back** — model emitting raw PII the masker missed outbound.
+- **Evaluate** new detector versions against your real traffic offline.
+
+Encryption is mandatory whenever PII is stored; the proxy refuses to start
+without a keyring key. See [SECURITY.md](SECURITY.md) for the threat model.
+
+### Modes
+
+| Flag | What's stored |
+|---|---|
+| `--telemetry` | Labels, lengths, scores. No PII content. (Default if telemetry is on.) |
+| `--telemetry --telemetry-store-pii` | Adds encrypted entity text + ±200 char window per span. |
+| `… --telemetry-corpus` | Adds full encrypted user-side text. |
+| `… --telemetry-corpus-include-responses` | Adds full encrypted response text. |
+
+### Workflow
+
+```bash
+# First-run key setup (generates and stores in OS keyring)
+anon-proxy --telemetry-init-key
+
+# Run with Lean mode capture
+anon-proxy --telemetry --telemetry-store-pii
+
+# Weekly review
+anon-proxy telemetry triage --days 7
+anon-proxy telemetry-report
+
+# Mine the labeled corpus for regex candidates
+anon-proxy telemetry suggest-regex --from-corpus
+```
+
+### Storage
+
+By default, telemetry lives in:
+- macOS: `~/Library/Application Support/anon-proxy/`
+- Linux: `$XDG_DATA_HOME/anon-proxy/` (typically `~/.local/share/anon-proxy/`)
+
+Three files:
+- `telemetry-raw.jsonl` — auto-purged after 30 days or 50 MB (whichever first)
+- `corpus.jsonl` — your hand-curated labeled records, no auto-purge
+- `metrics.jsonl` — daily aggregate rollups (zero PII), no auto-purge
+
+The proxy warns if you point `--telemetry-path` under a known cloud-sync root
+(Dropbox, iCloud Drive, OneDrive, etc.) — the encrypted blob would be
+replicated to that service indefinitely.
 
 ---
 

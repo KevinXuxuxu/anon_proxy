@@ -40,12 +40,17 @@ def mask_request(body: dict, masker: Masker) -> dict:
     return result
 
 
-def unmask_response(body: dict, masker: Masker) -> dict:
-    """Return a copy of a non-streaming response with text unmasked."""
+def unmask_response(body: dict, masker: Masker, *, telemetry_batch=None, side: str = "response") -> dict:
+    """Return a copy of a non-streaming response with text unmasked.
+
+    When `telemetry_batch` is provided, runs detectors on each text content item
+    before unmasking and feeds results into the batch tagged with `side`.
+    This catches "leak-back" — raw PII the model emits that the outbound masker missed.
+    """
     result = dict(body)
     choices = body.get("choices")
     if isinstance(choices, list):
-        result["choices"] = [_unmask_choice(c, masker) for c in choices]
+        result["choices"] = [_unmask_choice(c, masker, telemetry_batch=telemetry_batch, side=side) for c in choices]
     return result
 
 
@@ -122,16 +127,16 @@ def _mask_tool(tool: dict, masker: Masker) -> dict:
     return result
 
 
-def _unmask_choice(choice: dict, masker: Masker) -> dict:
+def _unmask_choice(choice: dict, masker: Masker, *, telemetry_batch=None, side: str = "response") -> dict:
     """Unmask a response choice."""
     result = dict(choice)
     message = choice.get("message")
     if isinstance(message, dict):
-        result["message"] = _unmask_message(message, masker)
+        result["message"] = _unmask_message(message, masker, telemetry_batch=telemetry_batch, side=side)
     return result
 
 
-def _unmask_message(message: dict, masker: Masker) -> dict:
+def _unmask_message(message: dict, masker: Masker, *, telemetry_batch=None, side: str = "response") -> dict:
     """Unmask a response message."""
     if not isinstance(message, dict):
         return message
@@ -141,9 +146,11 @@ def _unmask_message(message: dict, masker: Masker) -> dict:
     # Unmask content
     content = message.get("content")
     if isinstance(content, str):
+        if telemetry_batch is not None and content:
+            _observe_response_text(content, masker, telemetry_batch, side)
         result["content"] = masker.unmask(content)
     elif isinstance(content, list):
-        result["content"] = [_unmask_content_item(c, masker) for c in content]
+        result["content"] = [_unmask_content_item(c, masker, telemetry_batch=telemetry_batch, side=side) for c in content]
 
     # Unmask tool calls
     tool_calls = message.get("tool_calls")
@@ -153,11 +160,24 @@ def _unmask_message(message: dict, masker: Masker) -> dict:
     return result
 
 
-def _unmask_content_item(item: dict, masker: Masker) -> dict:
+def _unmask_content_item(item: dict, masker: Masker, *, telemetry_batch=None, side: str = "response") -> dict:
     """Unmask a content item."""
     if item.get("type") == "text" and isinstance(item.get("text"), str):
-        return {**item, "text": masker.unmask(item["text"])}
+        text = item["text"]
+        if telemetry_batch is not None and text:
+            _observe_response_text(text, masker, telemetry_batch, side)
+        return {**item, "text": masker.unmask(text)}
     return item
+
+
+def _observe_response_text(text: str, masker: Masker, telemetry_batch, side: str) -> None:
+    """Run detectors on response text; feed spans into the batch tagged with side."""
+    ml_spans, user_spans = masker.detect_only(text)
+    kept = ml_spans + user_spans
+    telemetry_batch.observe_v2(
+        text=text, ml_spans=ml_spans, user_spans=user_spans, kept=kept, events=[],
+        side=side,
+    )
 
 
 def _unmask_tool_call(tool_call: dict, masker: Masker) -> dict:
@@ -196,12 +216,17 @@ _STREAM_HANDLERS: dict[str, dict] = {
 }
 
 
+_MAX_ASSEMBLED_BYTES = 100_000  # 100 KB per-choice telemetry cap
+
+
 async def transform_stream(
     upstream_bytes: AsyncIterator[bytes],
     masker: Masker,
     *,
     on_upstream_text: TextHook | None = None,
     on_client_text: TextHook | None = None,
+    on_unmask_us: object | None = None,
+    telemetry_batch=None,
 ) -> AsyncIterator[bytes]:
     """Unmask masked payloads in an OpenAI SSE stream.
 
@@ -213,9 +238,14 @@ async def transform_stream(
 
     For content deltas, we buffer chunks to handle placeholders that may be
     split across multiple events (e.g., "<PERSON_2>" might come as "PERSON", "_", "2", ">").
+    When `telemetry_batch` is provided, runs detectors on each completed choice's
+    assembled text (at finish_reason or [DONE]) and feeds results into the batch
+    tagged as side="response".
     """
     tool_call_buffers: dict[int, str] = {}
     content_buffer = [""]  # Buffer for accumulating content chunks (mutable list)
+    # Per-choice assembled text for response-side leak-back detection.
+    assembled_by_choice: dict[int, str] = {}
     raw = b""
 
     async for chunk in upstream_bytes:
@@ -233,6 +263,12 @@ async def transform_stream(
                     # Yield a synthetic event with the buffered content
                     yield _serialize_sse(event_type, json.dumps({"choices": [{"delta": {"content": unmasked}}]}))
                     content_buffer[0] = ""
+                # Run detectors on any assembled choice text not yet observed.
+                if telemetry_batch is not None:
+                    for text in assembled_by_choice.values():
+                        if text:
+                            _observe_response_text(text, masker, telemetry_batch, "response")
+                    assembled_by_choice.clear()
                 yield _serialize_sse(event_type, data_str)
                 continue
 
@@ -244,6 +280,8 @@ async def transform_stream(
                 content_buffer,
                 on_upstream_text,
                 on_client_text,
+                telemetry_batch=telemetry_batch,
+                assembled_by_choice=assembled_by_choice,
             ):
                 yield _serialize_sse(out_event, out_data)
 
@@ -251,6 +289,13 @@ async def transform_stream(
     if content_buffer[0]:
         unmasked = masker.unmask(content_buffer[0])
         yield _serialize_sse(None, json.dumps({"choices": [{"delta": {"content": unmasked}}]}))
+
+    # Flush any assembled text not yet observed (stream ended without [DONE]).
+    if telemetry_batch is not None:
+        for text in assembled_by_choice.values():
+            if text:
+                _observe_response_text(text, masker, telemetry_batch, "response")
+        assembled_by_choice.clear()
 
     if raw.strip():
         yield raw
@@ -292,6 +337,9 @@ def _transform_event(
     content_buffer: list[str],  # Changed to mutable list to allow modification
     on_upstream_text: TextHook | None,
     on_client_text: TextHook | None,
+    *,
+    telemetry_batch=None,
+    assembled_by_choice: dict[int, str] | None = None,
 ):
     """Transform a single SSE event.
 
@@ -299,6 +347,10 @@ def _transform_event(
     1. Unmasking succeeds (no placeholders remain in buffer)
     2. Content starts with '<' (new placeholder starting - emit previous content)
     3. Buffer gets too long AND has no unclosed '<' (avoid unbounded buffering)
+
+    When `telemetry_batch` and `assembled_by_choice` are provided, content deltas
+    are also accumulated per choice index in `assembled_by_choice`. At finish_reason
+    the accumulated text is fed to the response-side detector.
     """
     if data_str is None or data_str == "[DONE]":
         yield event_type, data_str
@@ -317,15 +369,29 @@ def _transform_event(
 
     transformed = False
     for choice in choices:
+        choice_index = choice.get("index", 0)
         delta = choice.get("delta", {})
         if not isinstance(delta, dict):
             continue
+
+        # Detect finish_reason — run detector on assembled text when set.
+        finish_reason = choice.get("finish_reason")
+        if finish_reason is not None and telemetry_batch is not None and assembled_by_choice is not None:
+            text = assembled_by_choice.pop(choice_index, "")
+            if text:
+                _observe_response_text(text, masker, telemetry_batch, "response")
 
         # Handle content delta
         content = delta.get("content")
         if isinstance(content, str):
             if on_upstream_text and content:
                 on_upstream_text(content)
+
+            # Accumulate for response-side detection (capped at _MAX_ASSEMBLED_BYTES).
+            if assembled_by_choice is not None and content:
+                cur = assembled_by_choice.get(choice_index, "")
+                if len(cur) < _MAX_ASSEMBLED_BYTES:
+                    assembled_by_choice[choice_index] = cur + content
 
             # Add to buffer
             content_buffer[0] += content
