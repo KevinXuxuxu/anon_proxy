@@ -221,3 +221,26 @@ def test_build_telemetry_observer_uses_raw_writer(tmp_path, fake_keyring, monkey
     )
     # The sink is a bound method of RawWriter.write
     assert isinstance(obs._sink.__self__, RawWriter)
+
+
+def test_build_telemetry_observer_uses_raw_writer_for_zero_pii(tmp_path, monkeypatch):
+    """ZERO_PII mode should also use RawWriter so TTL/size flags work uniformly."""
+    from anon_proxy.retention import RawWriter
+    monkeypatch.delenv("ANON_PROXY_TELEMETRY_KEY", raising=False)
+    obs = build_telemetry_observer(
+        store_pii=False, corpus=False, include_responses=False,
+        raw_path=tmp_path / "telemetry-raw.jsonl",
+    )
+    # Sink is bound RawWriter.write
+    assert isinstance(obs._sink.__self__, RawWriter)
+
+
+def test_build_telemetry_observer_zero_pii_no_keychain_required(tmp_path, monkeypatch, fake_keyring):
+    """Sanity: even with the unified writer, ZERO_PII still does not require a key."""
+    monkeypatch.delenv("ANON_PROXY_TELEMETRY_KEY", raising=False)
+    # fake_keyring is empty — must not raise
+    obs = build_telemetry_observer(
+        store_pii=False, corpus=False, include_responses=False,
+        raw_path=tmp_path / "telemetry-raw.jsonl",
+    )
+    assert obs._encryption_key is None

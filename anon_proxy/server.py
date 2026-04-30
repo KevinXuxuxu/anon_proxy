@@ -38,7 +38,6 @@ from anon_proxy.storage_paths import exclude_from_time_machine, is_under_sync_ro
 from anon_proxy.telemetry import (
     DEFAULT_PATH as TELEMETRY_DEFAULT_PATH,
     CaptureMode,
-    JSONLWriter,
     TelemetryObserver,
     default_detector as default_telemetry_detector,
 )
@@ -615,9 +614,10 @@ def build_telemetry_observer(
     flag implies the earlier ones). Returns a TelemetryObserver wired with
     the right writer, detector, and (when storing PII) the keyring key.
 
-    When store_pii is True, uses RawWriter (with TTL + size auto-purge) backed
-    by MetricsWriter so trend data survives purge. ZERO_PII mode uses the
-    simpler JSONLWriter (no encryption key, no retention config).
+    All modes use RawWriter (with TTL + size auto-purge) backed by MetricsWriter
+    so rollup data survives purge and TTL/size flags work uniformly. The
+    encryption_key is None for ZERO_PII mode — spans are stored without
+    encrypted entity text.
 
     Raises SystemExit(2) if the user requested a PII-storing mode but no
     encryption key is available. Refuse-to-start by design — we never
@@ -662,17 +662,14 @@ def build_telemetry_observer(
                     file=sys.stderr,
                 )
 
-    if mode != CaptureMode.ZERO_PII:
-        cfg = RetentionConfig(
-            raw_dir=raw_path.parent,
-            ttl_days=ttl_days,
-            raw_size_mb=size_mb,
-        )
-        metrics = MetricsWriter(raw_path.parent)
-        raw_writer = RawWriter(cfg, metrics_writer=metrics)
-        sink = raw_writer.write
-    else:
-        sink = JSONLWriter(raw_path)
+    cfg = RetentionConfig(
+        raw_dir=raw_path.parent,
+        ttl_days=ttl_days,
+        raw_size_mb=size_mb,
+    )
+    metrics = MetricsWriter(raw_path.parent)
+    raw_writer = RawWriter(cfg, metrics_writer=metrics)
+    sink = raw_writer.write
 
     detector = (
         default_telemetry_detector()
