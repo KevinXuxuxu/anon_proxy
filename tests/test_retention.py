@@ -56,6 +56,32 @@ def test_metrics_writer_appends_daily_rollup(tmp_path):
     assert lines[1]["date"] == "2026-04-30"
 
 
+def test_raw_writer_assigns_id_when_missing(tmp_path):
+    cfg = RetentionConfig(raw_dir=tmp_path, ttl_days=30, raw_size_mb=50)
+    w = RawWriter(cfg)
+    w.write({"ts": "2026-04-29T00:00:00Z", "schema": 3, "spans": []})
+    rec = _read_lines(tmp_path / "telemetry-raw.jsonl")[0]
+    assert "id" in rec
+    assert len(rec["id"]) == 12
+
+
+def test_raw_writer_preserves_existing_id(tmp_path):
+    cfg = RetentionConfig(raw_dir=tmp_path, ttl_days=30, raw_size_mb=50)
+    w = RawWriter(cfg)
+    w.write({"id": "preset-id-x", "ts": "2026-04-29T00:00:00Z", "schema": 3, "spans": []})
+    rec = _read_lines(tmp_path / "telemetry-raw.jsonl")[0]
+    assert rec["id"] == "preset-id-x"
+
+
+def test_raw_writer_ids_are_unique(tmp_path):
+    cfg = RetentionConfig(raw_dir=tmp_path, ttl_days=30, raw_size_mb=50)
+    w = RawWriter(cfg)
+    for i in range(100):
+        w.write({"ts": f"2026-04-29T00:00:{i:02d}Z", "schema": 3, "spans": []})
+    ids = [r["id"] for r in _read_lines(tmp_path / "telemetry-raw.jsonl")]
+    assert len(ids) == len(set(ids))  # all unique
+
+
 def test_rollup_written_before_drop(tmp_path):
     from anon_proxy.retention import MetricsWriter
     cfg = RetentionConfig(raw_dir=tmp_path, ttl_days=0, raw_size_mb=50)  # everything is "old"

@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from anon_proxy.storage_paths import secure_create_dir, secure_create_file
 
@@ -54,6 +55,8 @@ class RawWriter(_AppendOnlyWriter):
         self._metrics_writer = metrics_writer
 
     def write(self, record: dict) -> None:
+        if "id" not in record:
+            record = {**record, "id": uuid4().hex[:12]}
         self._append(record)
         self._purge()
 
