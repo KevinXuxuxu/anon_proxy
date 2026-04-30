@@ -485,6 +485,7 @@ async def _stream_response(
                 on_upstream_text=upstream_buf.append if debug else None,
                 on_client_text=client_buf.append if debug else None,
                 on_unmask_us=acc_unmask_us,
+                telemetry_batch=batch,
             ):
                 yield out
         finally:

@@ -139,6 +139,7 @@ async def transform_stream(
     on_upstream_text: TextHook | None = None,
     on_client_text: TextHook | None = None,
     on_unmask_us: Callable[[int], None] | None = None,
+    telemetry_batch=None,
 ) -> AsyncIterator[bytes]:
     """Unmask masked payloads in an Anthropic SSE stream.
 
@@ -155,6 +156,8 @@ async def transform_stream(
     (post-unmask). Both are optional hooks for debug/logging.
     `on_unmask_us` fires with the microseconds spent on each unmask call;
     the caller accumulates the total and converts to ms at commit time.
+    When `telemetry_batch` is provided, runs detectors on each completed text block
+    and feeds detected spans into the batch tagged as side="response".
     """
 
     def _timed_unmask(value: str, *, json_ctx: bool) -> str:
@@ -174,7 +177,7 @@ async def transform_stream(
             event_type, data_str = _parse_sse(event_bytes)
             for out_event, out_data in _transform_event(
                 event_type, data_str, masker, blocks, on_upstream_text, on_client_text,
-                _timed_unmask,
+                _timed_unmask, telemetry_batch=telemetry_batch,
             ):
                 yield _serialize_sse(out_event, out_data)
     if raw.strip():
@@ -209,6 +212,9 @@ def _serialize_sse(event_type: str | None, data: str | None) -> bytes:
     return ("\n".join(lines) + "\n\n").encode("utf-8")
 
 
+_MAX_ASSEMBLED_BYTES = 100_000  # 100 KB per-block telemetry cap
+
+
 def _transform_event(
     event_type,
     data_str,
@@ -217,6 +223,8 @@ def _transform_event(
     on_upstream_text: TextHook | None,
     on_client_text: TextHook | None,
     timed_unmask: Callable[[str, bool], str] | None = None,
+    *,
+    telemetry_batch=None,
 ):
     # Use timed_unmask if provided, otherwise fall back to plain _unmask_for.
     def _do_unmask(text: str, escape: bool) -> str:
@@ -238,7 +246,8 @@ def _transform_event(
         cb = data.get("content_block") or {}
         handler = _STREAM_HANDLERS.get(cb.get("type"))
         if handler:
-            blocks[idx] = {**handler, "buffer": ""}
+            # "assembled" tracks full upstream text for telemetry (text blocks only).
+            blocks[idx] = {**handler, "buffer": "", "assembled": ""}
             # tool_use may carry non-empty initial input — unmask it in place.
             if cb.get("type") == "tool_use":
                 input_val = cb.get("input")
@@ -258,6 +267,11 @@ def _transform_event(
             piece = delta.get(field) or ""
             if on_upstream_text and piece:
                 on_upstream_text(piece)
+            # Accumulate full upstream text for response-side detection (text blocks only).
+            if state["field"] == "text" and piece:
+                cur = state["assembled"]
+                if len(cur) < _MAX_ASSEMBLED_BYTES:
+                    state["assembled"] = cur + piece
             buf = state["buffer"] + piece
             emittable, remainder = _split_emit(buf)
             state["buffer"] = remainder
@@ -284,6 +298,15 @@ def _transform_event(
                 "delta": {"type": state["delta_type"], state["field"]: unmasked},
             }
             yield "content_block_delta", json.dumps(flush)
+        # Run response-side detector on the assembled text block (text blocks only).
+        if (
+            telemetry_batch is not None
+            and state is not None
+            and state["field"] == "text"
+        ):
+            assembled = state["assembled"]
+            if assembled:
+                _observe_response(assembled, masker, telemetry_batch, "response")
         yield event_type, json.dumps(data)
         return
 
