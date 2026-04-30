@@ -9,7 +9,16 @@ issue this project has.
 **Do not file a public GitHub issue for security bugs.** A public issue with a
 working exploit invites the same data leaks anon-proxy is supposed to prevent.
 
-Instead, email the maintainer privately. Include:
+Instead, use GitHub's [Private Vulnerability Reporting][pvr] to send the
+maintainers a private advisory:
+
+1. Go to the [Security tab](https://github.com/KevinXuxuxu/anon_proxy/security)
+   of this repository.
+2. Click **Report a vulnerability** (or open
+   <https://github.com/KevinXuxuxu/anon_proxy/security/advisories/new> directly).
+3. Fill in the advisory form.
+
+Please include:
 
 - A short description of what the bug allows.
 - Steps to reproduce, ideally with a minimal input (a prompt, a tool call, etc.)
@@ -20,7 +29,9 @@ Instead, email the maintainer privately. Include:
   setup?).
 
 You should expect an acknowledgement within a few days. Once a fix is ready
-and shipped, the issue can be disclosed publicly with credit.
+and shipped, the advisory can be published with credit.
+
+[pvr]: https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability
 
 ## Threat model
 
