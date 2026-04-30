@@ -145,13 +145,21 @@ def _log_response(upstream: dict, unmasked: dict) -> None:
     sys.stderr.flush()
 
 
-def _log_stream_summary(upstream_text: str, client_text: str) -> None:
-    if upstream_text != client_text:
-        print(
-            f"{_GREEN}[unmasked stream]{_RESET} {_trunc(upstream_text)} → {_trunc(client_text)}",
-            file=sys.stderr,
-        )
-        sys.stderr.flush()
+def _log_stream_substitutions(substitutions: dict[str, str]) -> None:
+    """Log stream unmasking substitutions."""
+    if not substitutions:
+        return
+
+    print(f"{_GREEN}[unmasked stream]{_RESET}", file=sys.stderr)
+    for masked, unmasked in substitutions.items():
+        # Escape backslashes and newlines for display
+        masked_display = masked.replace('\\', '\\\\').replace('\n', '\\n')
+        unmasked_display = unmasked.replace('\\', '\\\\').replace('\n', '\\n')
+        print(f"  {masked_display}", file=sys.stderr)
+        print(f"  →", file=sys.stderr)
+        print(f"  {unmasked_display}", file=sys.stderr)
+        print(file=sys.stderr)  # Empty line separator
+    sys.stderr.flush()
 
 
 _SKIP_REQUEST_HEADERS = {
@@ -316,19 +324,22 @@ async def _handle_proxy(
             )
 
         async def body_iter():
-            upstream_buf: list[str] = []
-            client_buf: list[str] = []
+            # For streaming, track substitutions for debug logging
+            substitutions: dict[str, str] = {}
+            def track_substitution(upstream: str, client: str):
+                """Track placeholder → unmasked substitutions."""
+                if upstream != client and upstream.startswith("<"):
+                    substitutions[upstream] = substitutions.get(upstream, client)
             try:
                 async for out in adapter.transform_stream(
                     upstream_resp.aiter_bytes(),
                     masker,
-                    on_upstream_text=upstream_buf.append if debug else None,
-                    on_client_text=client_buf.append if debug else None,
+                    on_substitution=track_substitution if debug else None,
                 ):
                     yield out
             finally:
                 if debug:
-                    _log_stream_summary("".join(upstream_buf), "".join(client_buf))
+                    _log_stream_substitutions(substitutions)
                 await upstream_resp.aclose()
 
         return StreamingResponse(

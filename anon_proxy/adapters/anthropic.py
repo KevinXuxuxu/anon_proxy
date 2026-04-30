@@ -21,8 +21,6 @@ from collections.abc import AsyncIterator, Callable
 
 from anon_proxy.masker import Masker
 
-TextHook = Callable[[str], None]
-
 
 def mask_request(body: dict, masker: Masker) -> dict:
     """Return a copy of an Anthropic Messages request body with PII masked.
@@ -114,8 +112,7 @@ async def transform_stream(
     upstream_bytes: AsyncIterator[bytes],
     masker: Masker,
     *,
-    on_upstream_text: TextHook | None = None,
-    on_client_text: TextHook | None = None,
+    on_substitution: Callable[[str, str], None] | None = None,
 ) -> AsyncIterator[bytes]:
     """Unmask masked payloads in an Anthropic SSE stream.
 
@@ -127,9 +124,7 @@ async def transform_stream(
     token (a trailing `<` with no matching `>`). The buffer is flushed as an
     injected delta event immediately before each content_block_stop.
 
-    `on_upstream_text` fires with each raw masked fragment as it arrives from
-    upstream; `on_client_text` fires with each fragment emitted to the client
-    (post-unmask). Both are optional hooks for debug/logging.
+    `on_substitution` fires with each (placeholder, unmasked) pair for debug logging.
     """
     blocks: dict[int, dict] = {}
     raw = b""
@@ -139,7 +134,7 @@ async def transform_stream(
             event_bytes, raw = raw.split(b"\n\n", 1)
             event_type, data_str = _parse_sse(event_bytes)
             for out_event, out_data in _transform_event(
-                event_type, data_str, masker, blocks, on_upstream_text, on_client_text,
+                event_type, data_str, masker, blocks, on_substitution,
             ):
                 yield _serialize_sse(out_event, out_data)
     if raw.strip():
@@ -179,8 +174,7 @@ def _transform_event(
     data_str,
     masker: Masker,
     blocks: dict[int, dict],
-    on_upstream_text: TextHook | None,
-    on_client_text: TextHook | None,
+    on_substitution: Callable[[str, str], None] | None,
 ):
     if data_str is None:
         yield event_type, None
@@ -214,15 +208,13 @@ def _transform_event(
         if state and delta.get("type") == state["delta_type"]:
             field = state["field"]
             piece = delta.get(field) or ""
-            if on_upstream_text and piece:
-                on_upstream_text(piece)
             buf = state["buffer"] + piece
             emittable, remainder = _split_emit(buf)
             state["buffer"] = remainder
             if emittable:
                 unmasked = _unmask_for(masker, emittable, state["escape"])
-                if on_client_text:
-                    on_client_text(unmasked)
+                if on_substitution and emittable != unmasked:
+                    on_substitution(emittable, unmasked)
                 new_data = {**data, "delta": {**delta, field: unmasked}}
                 yield event_type, json.dumps(new_data)
             return
@@ -234,8 +226,8 @@ def _transform_event(
         state = blocks.pop(idx, None)
         if state and state["buffer"]:
             unmasked = _unmask_for(masker, state["buffer"], state["escape"])
-            if on_client_text:
-                on_client_text(unmasked)
+            if on_substitution and state["buffer"] != unmasked:
+                on_substitution(state["buffer"], unmasked)
             flush = {
                 "type": "content_block_delta",
                 "index": idx,

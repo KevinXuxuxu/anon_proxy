@@ -16,8 +16,6 @@ from collections.abc import AsyncIterator, Callable
 
 from anon_proxy.masker import Masker
 
-TextHook = Callable[[str], None]
-
 
 def mask_request(body: dict, masker: Masker) -> dict:
     """Return a copy of an OpenAI chat completions request with PII masked.
@@ -200,8 +198,7 @@ async def transform_stream(
     upstream_bytes: AsyncIterator[bytes],
     masker: Masker,
     *,
-    on_upstream_text: TextHook | None = None,
-    on_client_text: TextHook | None = None,
+    on_substitution: Callable[[str, str], None] | None = None,
 ) -> AsyncIterator[bytes]:
     """Unmask masked payloads in an OpenAI SSE stream.
 
@@ -227,9 +224,10 @@ async def transform_stream(
             if data_str == "[DONE]":
                 # Flush any remaining content buffer before DONE
                 if content_buffer[0]:
-                    unmasked = masker.unmask(content_buffer[0])
-                    if on_client_text:
-                        on_client_text(unmasked)
+                    buffered = content_buffer[0]
+                    unmasked = masker.unmask(buffered)
+                    if on_substitution and buffered != unmasked:
+                        on_substitution(buffered, unmasked)
                     # Yield a synthetic event with the buffered content
                     yield _serialize_sse(event_type, json.dumps({"choices": [{"delta": {"content": unmasked}}]}))
                     content_buffer[0] = ""
@@ -242,14 +240,16 @@ async def transform_stream(
                 masker,
                 tool_call_buffers,
                 content_buffer,
-                on_upstream_text,
-                on_client_text,
+                on_substitution,
             ):
                 yield _serialize_sse(out_event, out_data)
 
     # Flush any remaining content
     if content_buffer[0]:
-        unmasked = masker.unmask(content_buffer[0])
+        buffered = content_buffer[0]
+        unmasked = masker.unmask(buffered)
+        if on_substitution and buffered != unmasked:
+            on_substitution(buffered, unmasked)
         yield _serialize_sse(None, json.dumps({"choices": [{"delta": {"content": unmasked}}]}))
 
     if raw.strip():
@@ -290,8 +290,7 @@ def _transform_event(
     masker: Masker,
     tool_call_buffers: dict[int, str],
     content_buffer: list[str],  # Changed to mutable list to allow modification
-    on_upstream_text: TextHook | None,
-    on_client_text: TextHook | None,
+    on_substitution: Callable[[str, str], None] | None,
 ):
     """Transform a single SSE event.
 
@@ -324,9 +323,6 @@ def _transform_event(
         # Handle content delta
         content = delta.get("content")
         if isinstance(content, str):
-            if on_upstream_text and content:
-                on_upstream_text(content)
-
             # Add to buffer
             content_buffer[0] += content
             buffered = content_buffer[0]
@@ -343,8 +339,8 @@ def _transform_event(
                 should_emit = True
 
             if should_emit:
-                if on_client_text:
-                    on_client_text(unmasked)
+                if on_substitution and buffered != unmasked:
+                    on_substitution(buffered, unmasked)
                 choice["delta"]["content"] = unmasked
                 content_buffer[0] = ""
                 yield event_type, json.dumps(data)
@@ -359,8 +355,8 @@ def _transform_event(
             if content_buffer[0]:
                 buffered = content_buffer[0]
                 unmasked = masker.unmask(buffered)
-                if on_client_text:
-                    on_client_text(unmasked)
+                if on_substitution and buffered != unmasked:
+                    on_substitution(buffered, unmasked)
                 choice["delta"]["content"] = unmasked
                 content_buffer[0] = ""
                 yield event_type, json.dumps(data)
@@ -382,9 +378,6 @@ def _transform_event(
                 if isinstance(function, dict):
                     args_delta = function.get("arguments", "")
                     if isinstance(args_delta, str) and args_delta:
-                        if on_upstream_text and args_delta:
-                            on_upstream_text(args_delta)
-
                         # Accumulate arguments for this tool call
                         buf = tool_call_buffers.get(tc_index, "")
                         buf += args_delta
@@ -393,8 +386,8 @@ def _transform_event(
                         # Try to emit complete JSON chunks
                         if _is_complete_json(buf):
                             unmasked = masker.unmask_json(buf)
-                            if on_client_text:
-                                on_client_text(unmasked)
+                            if on_substitution and buf != unmasked:
+                                on_substitution(buf, unmasked)
                             tc["function"]["arguments"] = unmasked
                             tool_call_buffers[tc_index] = ""
                         else:
