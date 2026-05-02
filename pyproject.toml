@@ -1,9 +1,41 @@
 [project]
 name = "anon-proxy"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local-first PII masking proxy for LLM APIs (Anthropic, OpenAI). Detects names, emails, phone numbers, addresses with the openai/privacy-filter model and rewrites them to stable placeholders before bytes leave your machine."
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "anon-proxy contributors" },
+]
+keywords = [
+    "privacy",
+    "pii",
+    "llm",
+    "anthropic",
+    "openai",
+    "claude",
+    "chatgpt",
+    "proxy",
+    "masking",
+    "redaction",
+    "data-protection",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: Proxy Servers",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "anthropic>=0.96.0",
     "httpx>=0.28.1",
@@ -13,3 +45,15 @@ dependencies = [
     "transformers>=5.6.0",
     "uvicorn[standard]>=0.45.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/KevinXuxuxu/anon_proxy"
+Repository = "https://github.com/KevinXuxuxu/anon_proxy"
+Issues = "https://github.com/KevinXuxuxu/anon_proxy/issues"
+
+[project.scripts]
+anon-proxy = "anon_proxy.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
