@@ -102,6 +102,10 @@ def _walk_strings(value, transform):
     return value
 
 
+# Configuration for streaming unmasking per block type.
+# - delta_type: the event type that carries incremental content
+# - field: the field name within the delta that contains the content
+# - escape: whether to JSON-escape unmasked values (for tool_use partial JSON)
 _STREAM_HANDLERS: dict[str, dict] = {
     "text":     {"delta_type": "text_delta",       "field": "text",         "escape": False},
     "tool_use": {"delta_type": "input_json_delta", "field": "partial_json", "escape": True},
@@ -116,18 +120,27 @@ async def transform_stream(
 ) -> AsyncIterator[bytes]:
     """Unmask masked payloads in an Anthropic SSE stream.
 
-    Handles two block types: `text` (text_delta.text) and `tool_use`
-    (input_json_delta.partial_json, substituted with JSON-escaped originals).
+    Stream flow:
+    1. Accumulate raw bytes until we have complete SSE events (delimited by \n\n)
+    2. Parse each event into (type, data)
+    3. Transform events that contain masked content
+    4. Serialize and emit transformed events
 
-    Placeholders like <PERSON_1> can split across chunks (`<PER` / `SON_1>`), so
-    a per-block tail buffer holds back anything that might be an incomplete
-    token (a trailing `<` with no matching `>`). The buffer is flushed as an
-    injected delta event immediately before each content_block_stop.
+    Block handling:
+    - text blocks: unmask <PERSON_1> placeholders back to original names
+    - tool_use blocks: unmask with JSON escaping (since partial_json is a string)
+
+    Placeholder splitting:
+    - Placeholders can span chunk boundaries (<PERSON_1> → "<PER" + "SON_1>")
+    - We buffer incomplete tokens (trailing "<" without ">") until block_stop
+    - Buffer is flushed as an extra delta event before content_block_stop
 
     `on_substitution` fires with each (placeholder, unmasked) pair for debug logging.
     """
+    # Per-block state: index -> {delta_type, field, escape, buffer}
+    # buffer holds incomplete placeholder tokens that may complete in next chunk
     blocks: dict[int, dict] = {}
-    raw = b""
+    raw = b""  # Accumulator for incomplete SSE events
     async for chunk in upstream_bytes:
         raw += chunk
         while b"\n\n" in raw:
@@ -176,6 +189,16 @@ def _transform_event(
     blocks: dict[int, dict],
     on_substitution: Callable[[str, str], None] | None,
 ):
+    """Transform a single SSE event, unmasking content where needed.
+
+    Event types handled:
+    - content_block_start: Initialize block state, unmask initial tool_use input
+    - content_block_delta: Unmask incremental content, buffer incomplete tokens
+    - content_block_stop: Flush any buffered incomplete tokens
+    - All other events: pass through unchanged
+
+    The `blocks` dict tracks per-block state across events, keyed by block index.
+    """
     if data_str is None:
         yield event_type, None
         return
@@ -186,6 +209,7 @@ def _transform_event(
         return
 
     if event_type == "content_block_start":
+        # A new content block is starting. Set up state for tracking deltas.
         idx = data.get("index", 0)
         cb = data.get("content_block") or {}
         handler = _STREAM_HANDLERS.get(cb.get("type"))
@@ -202,6 +226,7 @@ def _transform_event(
         return
 
     if event_type == "content_block_delta":
+        # Incremental content for a block. Unmask and buffer incomplete tokens.
         idx = data.get("index", 0)
         delta = data.get("delta") or {}
         state = blocks.get(idx)
@@ -222,12 +247,14 @@ def _transform_event(
         return
 
     if event_type == "content_block_stop":
+        # Block is ending. Flush any buffered incomplete tokens.
         idx = data.get("index", 0)
         state = blocks.pop(idx, None)
         if state and state["buffer"]:
             unmasked = _unmask_for(masker, state["buffer"], state["escape"])
             if on_substitution and state["buffer"] != unmasked:
                 on_substitution(state["buffer"], unmasked)
+            # Inject an extra delta event to flush the buffer
             flush = {
                 "type": "content_block_delta",
                 "index": idx,
@@ -237,6 +264,7 @@ def _transform_event(
         yield event_type, json.dumps(data)
         return
 
+    # Pass through all other events unchanged
     yield event_type, data_str
 
 
