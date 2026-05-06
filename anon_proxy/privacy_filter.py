@@ -102,6 +102,14 @@ class PrivacyFilter:
         """Return the pipeline's untouched per-span dicts for debugging."""
         return list(self._pipe(text))
 
+    def chunk_ranges(self, text: str) -> list[tuple[int, int]]:
+        """Return (start, end) character offsets of the chunks that detect() uses.
+
+        Mirrors the splitter exactly so tooling (e.g. telemetry) can reason
+        about real chunk boundaries instead of guessing via `len // chunk_size`.
+        """
+        return [(off, off + len(ch)) for off, ch in _split_chunks(text, self._chunk_size)]
+
     def detect_batch(self, texts: Iterable[str]) -> list[list[PIIEntity]]:
         texts = list(texts)
         if not texts:
