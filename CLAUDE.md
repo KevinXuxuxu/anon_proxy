@@ -50,6 +50,19 @@ Server flags (all have `ANON_PROXY_*` env var equivalents):
 - `--patterns <file>` — JSON file of extra regex detectors
 - `--merge-gap-file <file>` — per-label adjacency merge chars
 - `--chunk-size <N>` — max chars per model inference pass (default: 1500)
+- `--telemetry` — opt-in: write one zero-PII JSON record per API request to `~/.anon-proxy/telemetry.jsonl` (labels/lengths/positions only)
+- `--telemetry-path <file>` — override the telemetry log path
+
+Telemetry layer: `anon_proxy.telemetry` exposes `TelemetryObserver` and
+`TelemetryBatch`. Records use a v2 schema with per-span attribution,
+overlap events, per-chunk distribution, and optional per-phase latency
+(`mask`, `upstream`, `unmask`, `total` ms). Read with
+`uv run python -m anon_proxy.telemetry_report`.
+
+Offline eval: `python -m anon_proxy.eval --corpus <file>` runs the masking
+pipeline against a labeled JSONL corpus and reports per-label
+precision / recall / F1. Synthetic corpus generator and 5 OPF samples
+(Apache 2.0) bundled in `anon_proxy/eval_corpus/`.
 
 ## Toolchain
 
