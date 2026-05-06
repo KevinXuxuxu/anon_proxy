@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import urljoin
 
 import httpx
@@ -31,6 +33,12 @@ from anon_proxy.adapters import openai as openai_adapter
 from anon_proxy.masker import Masker
 from anon_proxy.privacy_filter import PrivacyFilter, load_merge_gap
 from anon_proxy.regex_detector import RegexDetector, load_patterns
+from anon_proxy.telemetry import (
+    DEFAULT_PATH as TELEMETRY_DEFAULT_PATH,
+    JSONLWriter,
+    TelemetryObserver,
+    default_detector as default_telemetry_detector,
+)
 from anon_proxy.upstream import BUILT_IN_UPSTREAMS, UpstreamConfig, get_upstream_config
 
 _DIM = "\033[2m"
@@ -145,21 +153,13 @@ def _log_response(upstream: dict, unmasked: dict) -> None:
     sys.stderr.flush()
 
 
-def _log_stream_substitutions(substitutions: dict[str, str]) -> None:
-    """Log stream unmasking substitutions."""
-    if not substitutions:
-        return
-
-    print(f"{_GREEN}[unmasked stream]{_RESET}", file=sys.stderr)
-    for masked, unmasked in substitutions.items():
-        # Escape backslashes and newlines for display
-        masked_display = masked.replace('\\', '\\\\').replace('\n', '\\n')
-        unmasked_display = unmasked.replace('\\', '\\\\').replace('\n', '\\n')
-        print(f"  {masked_display}", file=sys.stderr)
-        print(f"  →", file=sys.stderr)
-        print(f"  {unmasked_display}", file=sys.stderr)
-        print(file=sys.stderr)  # Empty line separator
-    sys.stderr.flush()
+def _log_stream_summary(upstream_text: str, client_text: str) -> None:
+    if upstream_text != client_text:
+        print(
+            f"{_GREEN}[unmasked stream]{_RESET} {_trunc(upstream_text)} → {_trunc(client_text)}",
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
 
 
 _SKIP_REQUEST_HEADERS = {
@@ -290,95 +290,217 @@ async def _handle_proxy(
     if not should_mask:
         return await _passthrough(request, upstream_url, body_override=raw_body)
 
-    # Mask the request
-    store_before = len(masker.store)
-    masked = adapter.mask_request(body, masker)
-    if debug:
-        new_entries = masker.store.items()[store_before:]
-        _log_request(upstream_config.name, api_path, body, masked, new_entries)
+    # Mask the request — own the telemetry scope here so latency lands in the
+    # same record. Manual __enter__/__exit__ so the streaming path can hand
+    # the open scope off to body_iter.
+    t_start = time.perf_counter()
+    batch_cm = masker.request_scope()
+    batch = batch_cm.__enter__()
+    streaming_handed_off = False
+    try:
+        store_before = len(masker.store)
+        t_mask = time.perf_counter()
+        masked = adapter.mask_request(body, masker)
+        mask_ms = int((time.perf_counter() - t_mask) * 1000)
+        if debug:
+            new_entries = masker.store.items()[store_before:]
+            _log_request(upstream_config.name, api_path, body, masked, new_entries)
 
-    masked_bytes = json.dumps(masked).encode("utf-8")
-    upstream_headers = _forward_request_headers(request.headers)
-    params = dict(request.query_params)
+        masked_bytes = json.dumps(masked).encode("utf-8")
+        upstream_headers = _forward_request_headers(request.headers)
+        params = dict(request.query_params)
 
-    is_streaming = bool(_get_streaming_flag(body))
+        is_streaming = bool(_get_streaming_flag(body))
 
-    if is_streaming:
-        req = client.build_request(
-            request.method,
-            upstream_url,
-            content=masked_bytes,
-            headers=upstream_headers,
-            params=params,
-        )
-        upstream_resp = await client.send(req, stream=True)
-
-        if upstream_resp.status_code >= 400:
-            err_body = await upstream_resp.aread()
-            await upstream_resp.aclose()
-            return Response(
-                content=err_body,
-                status_code=upstream_resp.status_code,
-                headers=_filter_response_headers(upstream_resp.headers),
-                media_type=upstream_resp.headers.get("content-type"),
+        if is_streaming:
+            response = await _stream_response(
+                client=client,
+                masker=masker,
+                adapter=adapter,
+                method=request.method,
+                upstream_url=upstream_url,
+                masked_bytes=masked_bytes,
+                upstream_headers=upstream_headers,
+                params=params,
+                debug=debug,
+                batch=batch,
+                batch_cm=batch_cm,
+                t_start=t_start,
+                mask_ms=mask_ms,
             )
+            streaming_handed_off = True
+            return response
 
-        async def body_iter():
-            # For streaming, track substitutions for debug logging
-            substitutions: dict[str, str] = {}
-            def track_substitution(upstream: str, client: str):
-                """Track placeholder → unmasked substitutions."""
-                if upstream != client and upstream.startswith("<"):
-                    substitutions[upstream] = substitutions.get(upstream, client)
-            try:
-                async for out in adapter.transform_stream(
-                    upstream_resp.aiter_bytes(),
-                    masker,
-                    on_substitution=track_substitution if debug else None,
-                ):
-                    yield out
-            finally:
-                if debug:
-                    _log_stream_substitutions(substitutions)
-                await upstream_resp.aclose()
-
-        return StreamingResponse(
-            body_iter(),
-            status_code=upstream_resp.status_code,
-            headers=_filter_response_headers(upstream_resp.headers),
-            media_type="text/event-stream",
+        return await _handle_non_streaming(
+            client=client,
+            masker=masker,
+            adapter=adapter,
+            method=request.method,
+            upstream_url=upstream_url,
+            masked_bytes=masked_bytes,
+            upstream_headers=upstream_headers,
+            params=params,
+            debug=debug,
+            batch=batch,
+            t_start=t_start,
+            mask_ms=mask_ms,
         )
+    finally:
+        if not streaming_handed_off:
+            batch_cm.__exit__(None, None, None)
 
-    # Non-streaming response
+
+async def _handle_non_streaming(
+    *,
+    client: httpx.AsyncClient,
+    masker: Masker,
+    adapter,
+    method: str,
+    upstream_url: str,
+    masked_bytes: bytes,
+    upstream_headers: dict,
+    params: dict,
+    debug: bool,
+    batch,
+    t_start: float,
+    mask_ms: int,
+) -> Response:
+    """Non-streaming branch: upstream call + unmask + record latency."""
+    t_upstream = time.perf_counter()
     upstream_resp = await client.request(
-        request.method,
-        upstream_url,
-        content=masked_bytes,
-        headers=upstream_headers,
-        params=params,
+        method, upstream_url, content=masked_bytes, headers=upstream_headers, params=params,
     )
+    upstream_ms = int((time.perf_counter() - t_upstream) * 1000)
     content_type = upstream_resp.headers.get("content-type", "")
+
+    response, unmask_ms = _build_unmasked_response(upstream_resp, content_type, masker, adapter, debug)
+
+    if batch is not None:
+        batch.record_latency(
+            mask_ms=mask_ms,
+            upstream_ms=upstream_ms,
+            unmask_ms=unmask_ms,
+            total_ms=int((time.perf_counter() - t_start) * 1000),
+        )
+    return response
+
+
+def _build_unmasked_response(
+    upstream_resp: httpx.Response,
+    content_type: str,
+    masker: Masker,
+    adapter,
+    debug: bool,
+) -> tuple[Response, int]:
+    """Return (Response, unmask_ms). unmask_ms=0 when no unmask phase ran (non-JSON or 4xx/5xx)."""
     if content_type.startswith("application/json"):
         try:
             resp_json = upstream_resp.json()
         except ValueError:
             resp_json = None
         if resp_json is not None and upstream_resp.status_code < 400:
+            t_unmask = time.perf_counter()
             unmasked = adapter.unmask_response(resp_json, masker)
+            unmask_ms = int((time.perf_counter() - t_unmask) * 1000)
             if debug:
                 _log_response(resp_json, unmasked)
-            return Response(
-                content=json.dumps(unmasked),
-                status_code=upstream_resp.status_code,
-                headers=_filter_response_headers(upstream_resp.headers),
-                media_type="application/json",
+            return (
+                Response(
+                    content=json.dumps(unmasked),
+                    status_code=upstream_resp.status_code,
+                    headers=_filter_response_headers(upstream_resp.headers),
+                    media_type="application/json",
+                ),
+                unmask_ms,
             )
+    return (
+        Response(
+            content=upstream_resp.content,
+            status_code=upstream_resp.status_code,
+            headers=_filter_response_headers(upstream_resp.headers),
+            media_type=content_type or None,
+        ),
+        0,
+    )
 
-    return Response(
-        content=upstream_resp.content,
+
+async def _stream_response(
+    *,
+    client: httpx.AsyncClient,
+    masker: Masker,
+    adapter,
+    method: str,
+    upstream_url: str,
+    masked_bytes: bytes,
+    upstream_headers: dict,
+    params: dict,
+    debug: bool,
+    batch,
+    batch_cm,
+    t_start: float,
+    mask_ms: int,
+) -> Response:
+    """Streaming branch: records latency in body_iter's finally and exits the scope there."""
+    req = client.build_request(
+        method, upstream_url, content=masked_bytes, headers=upstream_headers, params=params,
+    )
+    t_upstream = time.perf_counter()
+    upstream_resp = await client.send(req, stream=True)
+
+    if upstream_resp.status_code >= 400:
+        err_body = await upstream_resp.aread()
+        await upstream_resp.aclose()
+        if batch is not None:
+            batch.record_latency(
+                mask_ms=mask_ms,
+                upstream_ms=int((time.perf_counter() - t_upstream) * 1000),
+                unmask_ms=0,
+                total_ms=int((time.perf_counter() - t_start) * 1000),
+            )
+        batch_cm.__exit__(None, None, None)
+        return Response(
+            content=err_body,
+            status_code=upstream_resp.status_code,
+            headers=_filter_response_headers(upstream_resp.headers),
+            media_type=upstream_resp.headers.get("content-type"),
+        )
+
+    async def body_iter():
+        upstream_buf: list[str] = []
+        client_buf: list[str] = []
+        unmask_us_total = 0
+
+        def acc_unmask_us(us: int) -> None:
+            nonlocal unmask_us_total
+            unmask_us_total += us
+
+        try:
+            async for out in adapter.transform_stream(
+                upstream_resp.aiter_bytes(),
+                masker,
+                on_upstream_text=upstream_buf.append if debug else None,
+                on_client_text=client_buf.append if debug else None,
+                on_unmask_us=acc_unmask_us,
+            ):
+                yield out
+        finally:
+            if debug:
+                _log_stream_summary("".join(upstream_buf), "".join(client_buf))
+            await upstream_resp.aclose()
+            if batch is not None:
+                batch.record_latency(
+                    mask_ms=mask_ms,
+                    upstream_ms=int((time.perf_counter() - t_upstream) * 1000),
+                    unmask_ms=unmask_us_total // 1000,
+                    total_ms=int((time.perf_counter() - t_start) * 1000),
+                )
+            batch_cm.__exit__(None, None, None)
+
+    return StreamingResponse(
+        body_iter(),
         status_code=upstream_resp.status_code,
         headers=_filter_response_headers(upstream_resp.headers),
-        media_type=content_type or None,
+        media_type="text/event-stream",
     )
 
 
@@ -522,6 +644,19 @@ def main() -> None:
         help="Add an extra upstream provider. Repeatable. "
              "Example: --extra-upstream myprovider=https://api.example.com;adapter=openai",
     )
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_TELEMETRY", "").lower() in ("1", "true", "yes"),
+        help="Opt-in: write one JSON record per masked request to a local JSONL file "
+             f"(default: {TELEMETRY_DEFAULT_PATH}). Records carry labels, lengths, and "
+             "boundary flags only — never PII content.",
+    )
+    parser.add_argument(
+        "--telemetry-path",
+        default=os.environ.get("ANON_PROXY_TELEMETRY_PATH"),
+        help=f"Override the telemetry log path (default: {TELEMETRY_DEFAULT_PATH}).",
+    )
     args = parser.parse_args()
 
     # Parse extra upstreams
@@ -559,9 +694,18 @@ def main() -> None:
             device=device,
         )
 
+    telemetry_observer = None
+    if args.telemetry:
+        log_path = Path(args.telemetry_path) if args.telemetry_path else TELEMETRY_DEFAULT_PATH
+        telemetry_observer = TelemetryObserver(
+            detector=default_telemetry_detector(),
+            sink=JSONLWriter(log_path),
+            chunker=(pf.chunk_ranges if pf is not None else None),
+        )
+
     masker = (
-        Masker(filter=pf, extra_detectors=extra_detectors)
-        if (pf is not None or extra_detectors)
+        Masker(filter=pf, extra_detectors=extra_detectors, telemetry=telemetry_observer)
+        if (pf is not None or extra_detectors or telemetry_observer is not None)
         else None
     )
 
@@ -569,6 +713,11 @@ def main() -> None:
 
     all_providers = sorted({**BUILT_IN_UPSTREAMS, **extra_upstreams}.keys())
     backend_display = f"{args.backend}" if args.backend != "auto" else "auto-detect"
+    telemetry_display = (
+        str(Path(args.telemetry_path) if args.telemetry_path else TELEMETRY_DEFAULT_PATH)
+        if args.telemetry
+        else "(off)"
+    )
     print(
         f"anon-proxy listening on http://{args.host}:{args.port}\n"
         f"  providers: {', '.join(all_providers)}\n"
@@ -576,6 +725,7 @@ def main() -> None:
         f"  patterns: {args.patterns or '(none)'}\n"
         f"  merge-gap-file: {args.merge_gap_file or '(defaults)'}\n"
         f"  backend: {backend_display}\n"
+        f"  telemetry: {telemetry_display}\n"
         f"\nUsage examples:\n"
         f"  Anthropic: base_url=http://{args.host}:{args.port}/anthropic\n"
         f"  OpenAI:   base_url=http://{args.host}:{args.port}/openai\n"
