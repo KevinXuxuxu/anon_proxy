@@ -59,6 +59,11 @@ overlap events, per-chunk distribution, and optional per-phase latency
 (`mask`, `upstream`, `unmask`, `total` ms). Read with
 `uv run python -m anon_proxy.telemetry_report`.
 
+Offline eval: `python -m anon_proxy.eval --corpus <file>` runs the masking
+pipeline against a labeled JSONL corpus and reports per-label
+precision / recall / F1. Synthetic corpus generator and 5 OPF samples
+(Apache 2.0) bundled in `anon_proxy/eval_corpus/`.
+
 ## Toolchain
 
 - Python `>=3.10` (pinned in `.python-version`)

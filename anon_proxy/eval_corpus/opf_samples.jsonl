@@ -1,0 +1,5 @@
+{"text":"Quindle Testwick can be reached at quindle.testwick@openai.com or (415) 555-0102 before 2026-05-17.","spans":[{"label":"person","start":0,"end":16},{"label":"email","start":35,"end":62},{"label":"phone","start":66,"end":80},{"label":"date","start":88,"end":98}]}
+{"text":"I live at 14 Beautiful Court, Anytown USA and you can send a bill for account 40702810500001234567.","spans":[{"label":"address","start":10,"end":41},{"label":"account_number","start":78,"end":98}]}
+{"text":"Reset credentials at https://portal.example.org/reset?token=abc123 and rotate secret sk-test-XYZ987.","spans":[{"label":"url","start":21,"end":66},{"label":"secret","start":85,"end":99}]}
+{"text":"Contact Edgar Alanpoe at e.alanpoe@openai.com on Friday, 5/23.","spans":[{"label":"person","start":8,"end":21},{"label":"email","start":25,"end":45},{"label":"date","start":57,"end":61}]}
+{"text":"Support ticket notes: phone +1 999 555-1234, address 404 Nowhere Lane, and passphrase Priv4cy-Filt3r-2026.","spans":[{"label":"phone","start":28,"end":43},{"label":"address","start":53,"end":69},{"label":"secret","start":86,"end":105}]}
