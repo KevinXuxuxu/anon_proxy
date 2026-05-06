@@ -26,7 +26,7 @@ uv run python main.py [options]
 
 ## Architecture
 
-The codebase is organized into four core responsibilities that remain cleanly separable:
+The codebase is organized into the following core responsibilities that remain cleanly separable:
 
 1. **`privacy_filter.py`** — Local PII detection using the OpenAI Privacy Filter model (HuggingFace). Handles chunking for long texts, adjacency merging for multi-word entities, and configurable per-label merge gap rules.
 
@@ -35,6 +35,17 @@ The codebase is organized into four core responsibilities that remain cleanly se
 3. **`mapping.py` + `masker.py`** — Persistent bidirectional mapping (`PIIStore`) and masking orchestration. Same entity gets same placeholder across requests. The `Masker` composes the PrivacyFilter with any extra detectors and handles overlap resolution.
 
 4. **`server.py` + `adapters/`** — HTTP proxy (Starlette/Uvicorn) that applies mask on outbound and unmask on inbound. Currently Anthropic-specific; OpenAI adapter is planned (see README roadmap).
+
+5. **`crypto.py` + `storage_paths.py` + `retention.py`** — Local PII storage layer.
+   `crypto.py` does field-level AES-256-GCM with a key in the OS keyring.
+   `storage_paths.py` picks a non-sync-root default and applies 0700 perms.
+   `retention.py` hosts three writers (raw with auto-purge, corpus indefinite,
+   metrics rollup) and the rollup-before-drop ordering.
+
+6. **`signatures.py` + `triage_cli.py`** — Triage workflow. `signatures.py`
+   computes per-label structural abstractions used by the skill (LLM-safe).
+   `triage_cli.py` exposes `anon-proxy telemetry <subcmd>`; interactive triage
+   is local-terminal-only and never crosses the LLM boundary.
 
 Key design invariants:
 - Masking layer should not know about HTTP
@@ -50,6 +61,25 @@ Server flags (all have `ANON_PROXY_*` env var equivalents):
 - `--patterns <file>` — JSON file of extra regex detectors
 - `--merge-gap-file <file>` — per-label adjacency merge chars
 - `--chunk-size <N>` — max chars per model inference pass (default: 1500)
+- `--telemetry` — opt-in: write one JSON record per API request to `~/.anon-proxy/telemetry.jsonl` (no PII content, only labels/lengths/positions)
+- `--telemetry-path <file>` — override the telemetry log path
+- `--telemetry-store-pii` — Lean mode (encrypted entity text + window per span)
+- `--telemetry-corpus` — Corpus mode (full input text)
+- `--telemetry-corpus-include-responses` — also store full response text
+- `--telemetry-init-key` — generate / store keyring key, then exit
+- `--telemetry-raw-ttl-days <N>` — default 30
+- `--telemetry-raw-size-mb <N>` — default 50
+
+Telemetry layer: `anon_proxy.telemetry` exposes `TelemetryObserver` and
+`TelemetryBatch`. Records use a v3 schema (strict superset of v2) with
+optional `enc_text` / `enc_window` per span when capture mode is enabled.
+Read with `uv run python -m anon_proxy.telemetry_report` (add `--with-text`
+to inspect content; key required, loud notice).
+
+Offline eval: `python -m anon_proxy.eval --corpus <file>` runs the masking
+pipeline against a labeled JSONL corpus and reports per-label
+precision / recall / F1. Synthetic corpus generator and 5 OPF samples
+(Apache 2.0) bundled in `anon_proxy/eval_corpus/`.
 
 ## Toolchain
 

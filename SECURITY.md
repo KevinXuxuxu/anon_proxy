@@ -99,6 +99,29 @@ security reports for these — they are open trade-offs:
   tool's contract. Configure `--patterns` carefully or skip masking for the
   affected tool.
 
+### PII storage at rest (opt-in modes)
+
+When `--telemetry-store-pii` is enabled, anon-proxy encrypts and persists
+detected entity text and surrounding context locally. The threat model
+treats this as consistent with the existing "trusts the local user" stance,
+with one new sub-risk explicitly named:
+
+**Aggregation.** Persisted records concentrate PII that previously existed
+only scattered across applications (mail, contacts, chat history). The
+encrypted store is mitigated by:
+
+- AES-256-GCM with a key in the OS keyring (Keychain / Secret Service).
+- Default path placement outside known cloud-sync roots; warning when the
+  user overrides into one.
+- Best-effort Time Machine exclusion on macOS.
+- Auto-purge of raw records (default 30 days, 50 MB).
+- A long-lived labeled corpus that contains only records the user has
+  consciously promoted via `anon-proxy telemetry triage`.
+
+Out of scope (unchanged): same-user malware can read the keyring; full-root
+attackers can read everything. Do not rely on this encryption to protect
+against an attacker who already controls your user account.
+
 ## Operational guidance
 
 If you run anon-proxy on multi-user hardware or expose it on a LAN

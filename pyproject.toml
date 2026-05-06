@@ -38,7 +38,9 @@ classifiers = [
 ]
 dependencies = [
     "anthropic>=0.96.0",
+    "cryptography>=42.0",
     "httpx>=0.28.1",
+    "keyring>=24.0",
     "prompt-toolkit>=3.0.52",
     "starlette>=1.0.0",
     "torch>=2.11.0",
@@ -57,3 +59,8 @@ anon-proxy = "anon_proxy.server:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
