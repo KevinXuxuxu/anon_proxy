@@ -480,3 +480,218 @@ class TestSkipPatternsNotCached:
         for _ in range(3):
             assert m.mask(text) == text
         assert fake_pipeline.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 3d: ignore_labels filtering.
+#
+# Constructor accepts any Iterable[str] | None. Each label is normalized via
+# normalize_label at construction (so users can supply `private_person`,
+# `PERSON`, or `person` and they all match). Filtering applies to ML
+# entities only — regex (extra_detectors) hits are user-configured
+# deliberately and bypass the filter.
+# ---------------------------------------------------------------------------
+
+
+class TestIgnoreLabelsBasics:
+    def test_none_means_no_filtering(self, make_masker, fake_pipeline):
+        m = make_masker(ignore_labels=None)
+        text = "Hello Alice"
+        fake_pipeline.set(text, [span("PERSON", 6, 11, score=0.9)])
+        assert m.mask(text) == "Hello <PERSON_1>"
+
+    def test_empty_iterable_means_no_filtering(self, make_masker, fake_pipeline):
+        m = make_masker(ignore_labels=[])
+        text = "Hello Alice"
+        fake_pipeline.set(text, [span("PERSON", 6, 11, score=0.9)])
+        assert m.mask(text) == "Hello <PERSON_1>"
+
+
+class TestIgnoreLabelsFilters:
+    def test_ml_entity_with_ignored_label_is_dropped(
+        self, make_masker, fake_pipeline
+    ):
+        m = make_masker(ignore_labels={"PERSON"})
+        text = "Hello Alice"
+        fake_pipeline.set(text, [span("PERSON", 6, 11, score=0.9)])
+        assert m.mask(text) == "Hello Alice"  # PERSON suppressed
+
+    def test_ml_entity_with_other_label_still_masked(
+        self, make_masker, fake_pipeline
+    ):
+        m = make_masker(ignore_labels={"EMAIL"})
+        text = "Hello Alice"
+        fake_pipeline.set(text, [span("PERSON", 6, 11, score=0.9)])
+        assert m.mask(text) == "Hello <PERSON_1>"
+
+
+class TestIgnoreLabelsNormalization:
+    """User-supplied labels are normalized at construction. Whatever form
+    the ML model emits (e.g. `private_person`) also normalizes the same way,
+    so the filter catches it."""
+
+    def test_private_prefix_label_normalized_in(self, make_masker, fake_pipeline):
+        m = make_masker(ignore_labels={"private_person"})
+        text = "Hello Alice"
+        fake_pipeline.set(text, [span("PERSON", 6, 11, score=0.9)])
+        assert m.mask(text) == "Hello Alice"
+
+    def test_lowercase_label_normalized_in(self, make_masker, fake_pipeline):
+        m = make_masker(ignore_labels={"person"})
+        text = "Hello Alice"
+        fake_pipeline.set(text, [span("PERSON", 6, 11, score=0.9)])
+        assert m.mask(text) == "Hello Alice"
+
+    def test_ml_entity_label_normalized_before_compare(
+        self, make_masker, fake_pipeline
+    ):
+        m = make_masker(ignore_labels={"PERSON"})
+        text = "Hello Alice"
+        # Model emits `private_person`; filter must still catch it.
+        fake_pipeline.set(
+            text, [span("private_person", 6, 11, score=0.9)]
+        )
+        assert m.mask(text) == "Hello Alice"
+
+
+class TestIgnoreLabelsAcceptsAnyIterable:
+    def test_list(self, make_masker, fake_pipeline):
+        m = make_masker(ignore_labels=["PERSON"])
+        fake_pipeline.set("Alice", [span("PERSON", 0, 5, score=0.9)])
+        assert m.mask("Alice") == "Alice"
+
+    def test_tuple(self, make_masker, fake_pipeline):
+        m = make_masker(ignore_labels=("PERSON",))
+        fake_pipeline.set("Alice", [span("PERSON", 0, 5, score=0.9)])
+        assert m.mask("Alice") == "Alice"
+
+    def test_frozenset(self, make_masker, fake_pipeline):
+        m = make_masker(ignore_labels=frozenset({"PERSON"}))
+        fake_pipeline.set("Alice", [span("PERSON", 0, 5, score=0.9)])
+        assert m.mask("Alice") == "Alice"
+
+    def test_generator(self, make_masker, fake_pipeline):
+        m = make_masker(ignore_labels=(lbl for lbl in ["PERSON"]))
+        fake_pipeline.set("Alice", [span("PERSON", 0, 5, score=0.9)])
+        assert m.mask("Alice") == "Alice"
+
+
+class TestIgnoreLabelsDoesNotApplyToRegex:
+    def test_regex_match_is_not_filtered_by_ignore_labels(
+        self, make_masker, fake_pipeline
+    ):
+        # ignore_labels=PHONE, but the regex detector with label PHONE still
+        # produces a masked output. Regex hits bypass the filter.
+        detector = RegexDetector({"PHONE": r"\d{3}-\d{4}"})
+        m = make_masker(extra_detectors=[detector], ignore_labels={"PHONE"})
+        text = "Call 555-1212 now"
+        # ML sees the intermediate; we register a silent response.
+        fake_pipeline.set("Call <PHONE_1> now", [])
+        assert m.mask(text) == "Call <PHONE_1> now"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3e: unmask + unmask_json.
+#
+# Both build a longest-first alternation regex from PIIStore.tokens() and
+# replace each occurrence. Unknown tokens (not in the store) pass through
+# unchanged. Empty input or empty store → input as-is, no regex built.
+# `unmask_json` additionally JSON-escapes each replacement so it can be
+# spliced into a raw JSON string context.
+# ---------------------------------------------------------------------------
+
+
+def _masker_with_known_tokens(make_filter, store, *pairs):
+    """Build a Masker whose store is pre-populated with (label, value) pairs."""
+    from anon_proxy.masker import Masker
+
+    m = Masker(filter=make_filter(), store=store, skip_patterns=[])
+    for label, value in pairs:
+        store.get_or_create(label, value)
+    return m
+
+
+class TestUnmaskBasics:
+    def test_empty_input_returns_empty(self, make_filter, store):
+        m = _masker_with_known_tokens(make_filter, store, ("PERSON", "Alice"))
+        assert m.unmask("") == ""
+
+    def test_no_tokens_in_store_input_unchanged(self, make_filter, store):
+        from anon_proxy.masker import Masker
+
+        m = Masker(filter=make_filter(), store=store, skip_patterns=[])
+        # Even with placeholder-shaped substrings, no store entries → pass through.
+        text = "<PERSON_1> says hi"
+        assert m.unmask(text) == text
+
+    def test_single_token_replaced(self, make_filter, store):
+        m = _masker_with_known_tokens(make_filter, store, ("PERSON", "Alice"))
+        assert m.unmask("hi <PERSON_1>") == "hi Alice"
+
+    def test_multiple_tokens_replaced(self, make_filter, store):
+        m = _masker_with_known_tokens(
+            make_filter, store,
+            ("PERSON", "Alice"),
+            ("EMAIL", "alice@example.com"),
+        )
+        assert m.unmask("<PERSON_1>: <EMAIL_1>") == "Alice: alice@example.com"
+
+    def test_repeated_token_replaced_every_occurrence(self, make_filter, store):
+        m = _masker_with_known_tokens(make_filter, store, ("PERSON", "Alice"))
+        assert m.unmask("<PERSON_1> and <PERSON_1>") == "Alice and Alice"
+
+
+class TestUnmaskLongestFirst:
+    def test_person_10_not_shadowed_by_person_1(self, make_filter, store):
+        # Populate enough entries to get <PERSON_10> in the store.
+        from anon_proxy.masker import Masker
+
+        m = Masker(filter=make_filter(), store=store, skip_patterns=[])
+        for i in range(1, 11):
+            store.get_or_create("PERSON", f"Person{i}")
+        # If the regex ordered <PERSON_1> before <PERSON_10>, the latter would
+        # be matched as "<PERSON_1>" + "0>" and Person1 substituted instead.
+        assert m.unmask("<PERSON_10>") == "Person10"
+
+
+class TestUnmaskUnknownTokensPassThrough:
+    def test_unknown_token_left_alone(self, make_filter, store):
+        m = _masker_with_known_tokens(make_filter, store, ("PERSON", "Alice"))
+        # <EMAIL_1> is placeholder-shaped but not in the store.
+        assert m.unmask("<PERSON_1> <EMAIL_1>") == "Alice <EMAIL_1>"
+
+    def test_non_token_text_unaffected(self, make_filter, store):
+        m = _masker_with_known_tokens(make_filter, store, ("PERSON", "Alice"))
+        assert m.unmask("plain text no tokens") == "plain text no tokens"
+
+
+class TestUnmaskJson:
+    def test_replacement_with_double_quote_is_escaped(self, make_filter, store):
+        m = _masker_with_known_tokens(
+            make_filter, store, ("PERSON", 'Alice "the great"')
+        )
+        out = m.unmask_json("name: <PERSON_1>")
+        # The escape is the JSON inner form: " → \"
+        assert out == 'name: Alice \\"the great\\"'
+
+    def test_replacement_with_backslash_is_escaped(self, make_filter, store):
+        m = _masker_with_known_tokens(
+            make_filter, store, ("PATH", r"C:\users\alice")
+        )
+        out = m.unmask_json("p: <PATH_1>")
+        # Backslashes are doubled in JSON string context.
+        assert out == 'p: C:\\\\users\\\\alice'
+
+    def test_replacement_with_newline_is_escaped(self, make_filter, store):
+        m = _masker_with_known_tokens(make_filter, store, ("NOTE", "line1\nline2"))
+        out = m.unmask_json("note: <NOTE_1>")
+        # \n becomes the two-char escape "\n".
+        assert out == "note: line1\\nline2"
+
+    def test_unknown_tokens_pass_through_in_json_too(self, make_filter, store):
+        m = _masker_with_known_tokens(make_filter, store, ("PERSON", "Alice"))
+        assert m.unmask_json("<EMAIL_1>") == "<EMAIL_1>"
+
+    def test_empty_input_returns_empty(self, make_filter, store):
+        m = _masker_with_known_tokens(make_filter, store, ("PERSON", "Alice"))
+        assert m.unmask_json("") == ""

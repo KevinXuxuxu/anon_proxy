@@ -5,7 +5,7 @@ import json
 import re
 import time
 from collections import OrderedDict
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 from anon_proxy.mapping import PIIStore, normalize_label
 from anon_proxy.privacy_filter import PIIEntity, PrivacyFilter
@@ -74,7 +74,7 @@ class Masker:
         store: PIIStore | None = None,
         extra_detectors: list[Detector] | None = None,
         skip_patterns: list[re.Pattern] | None = None,
-        ignore_labels: frozenset[str] | set[str] | None = None,
+        ignore_labels: Iterable[str] | None = None,
         cache_size: int = 4096,
     ) -> None:
         self._filter = filter if filter is not None else PrivacyFilter()
