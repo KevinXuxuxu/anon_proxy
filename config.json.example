@@ -1,0 +1,20 @@
+{
+  "patterns": {
+    "SSN": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
+    "IPV4": "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b",
+    "IPV6": "\\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\\b",
+    "MAC_ADDRESS": "\\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\\b",
+    "UK_POSTCODE": "\\b[A-Z]{1,2}\\d[A-Z\\d]?\\s*\\d[A-Z]{2}\\b"
+  },
+  "merge_gap": {
+    "PERSON":       " \t\n-'.",
+    "ADDRESS":      " \t\n,.#-/",
+    "DATE":         " \t\n,/.-",
+    "ORGANIZATION": " \t\n&.,-",
+    "LOCATION":     " \t\n,.-",
+    "EMAIL":        "",
+    "PHONE":        "",
+    "URL":          ""
+  },
+  "ignore_labels": []
+}
